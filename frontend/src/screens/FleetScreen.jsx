@@ -30,36 +30,36 @@ const STANDARD_DRONE_NAMES = {
 const WATERCRAFT_FLEET = [
   {
     id: 'BOAT-01',
-    callsign: 'RESCUE FLEET • Alpha Watercraft Unit',
+    callsign: 'RESCUE UNIT-01 [ALPHA WATERCRAFT SQUAD] • Rapid Inundation Response',
     type: 'High-Speed Inshore Rescue Craft (IRC)',
     status: 'deployed',
     speed: '28 knots',
     capacity: '8 Survivors + 2 Crew',
     engine: 'Twin 60HP Marine Outboards',
-    sector: 'North Canal Main Bridge',
+    sector: 'Sector 1: Coastal Canal Bridge (41.3850° N, -70.5280° W)',
     assigned_mission: 'Victim Extraction & Flotation Deployment'
   },
   {
     id: 'BOAT-02',
-    callsign: 'RESCUE FLEET • Bravo Inflatable Rescue Boat',
+    callsign: 'RESCUE UNIT-02 [BRAVO AMPHIBIOUS TEAM] • Shallow Water Evacuation',
     type: 'Rigid-Hull Inflatable Boat (RHIB)',
     status: 'on_standby',
     speed: '22 knots',
     capacity: '6 Survivors + 2 Crew',
     engine: '40HP Shallow-Draft Jet Drive',
-    sector: 'East Coastal Ridge Corridor',
+    sector: 'Sector 2: Low-Lying Marsh & School Access Road (41.3835° N, -70.5295° W)',
     assigned_mission: 'Shallow Inundation & Debris Extraction'
   },
   {
-    id: 'CRAWL-01',
-    callsign: 'RESCUE FLEET • Charlie Amphibious Crawler',
-    type: 'All-Terrain Tracked Amphibian (ARGO-8x8)',
+    id: 'AIR-03',
+    callsign: 'AIR-SUPPORT [LIFELINE-CHARLIE] • Drone Airdrop Cargo Unit',
+    type: 'Heavy-Lift Autonomous Cargo Drone (Payload: 15kg)',
     status: 'en_route',
-    speed: '12 km/h water / 30 km/h land',
-    capacity: '4 Stretcher Casualties + 2 Medics',
-    engine: 'High-Torque Turbo Diesel',
-    sector: 'Submerged Highway Pier #14',
-    assigned_mission: 'Medical Triage & Stretcher Evacuation'
+    speed: '45 km/h aerial cruise',
+    capacity: 'Hydration Packs + Trauma Kits + Satellite Beacon',
+    engine: 'Octocopter Electric Drive (AWS IoT Monitored)',
+    sector: 'Sector 3: Isolated Rooftops & Pier #14 (41.3862° N, -70.5270° W)',
+    assigned_mission: 'Airdrop Emergency Rations & Medical Lifeline'
   }
 ];
 

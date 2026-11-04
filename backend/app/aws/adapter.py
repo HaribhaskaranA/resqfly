@@ -261,6 +261,70 @@ class AWSClientAdapter:
         logger.debug(f"[LOCAL DYNAMODB MOCK] Stored in {table_name}: {clean_item}")
         return True
 
+    def sync_user_to_dynamodb(self, user_data: Dict[str, Any]) -> bool:
+        """
+        Saves user credentials to AWS DynamoDB table `resqfly_users`.
+        Schema:
+          - government_id: String (Partition Key)
+          - name: String
+          - email: String
+          - role: String (COORDINATOR or RESCUE_TEAM)
+          - password_hash: String
+          - verified: Boolean
+          - created_at: String (ISO format)
+        """
+        table_name = os.environ.get("DYNAMODB_USERS_TABLE", "resqfly_users")
+        role_raw = str(user_data.get("role", "COORDINATOR")).upper()
+        if "RESCUE" in role_raw or "FIELD" in role_raw:
+            standard_role = "RESCUE_TEAM"
+        else:
+            standard_role = "COORDINATOR"
+
+        record = {
+            "government_id": str(user_data.get("government_id") or user_data.get("gov_id")).strip().upper(),
+            "name": str(user_data.get("name") or user_data.get("full_name", "Authorized Officer")).strip(),
+            "email": str(user_data.get("email", "")).strip().lower(),
+            "role": standard_role,
+            "password_hash": str(user_data.get("password_hash", "")),
+            "verified": bool(user_data.get("verified", user_data.get("is_verified", False))),
+            "created_at": str(user_data.get("created_at") or datetime.now(timezone.utc).isoformat())
+        }
+
+        if self.is_connected and self.boto3_session:
+            try:
+                dynamodb = self.boto3_session.resource("dynamodb", region_name=self.region)
+                table = dynamodb.Table(table_name)
+                table.put_item(Item=record)
+                logger.info(f"User synced to DynamoDB {table_name}: {record['government_id']}")
+                return True
+            except Exception as exc:
+                logger.error(f"DynamoDB User PutItem Error: {exc} | Table: {table_name} | User: {record['government_id']}")
+                return False
+
+        logger.debug(f"[LOCAL DYNAMODB MOCK] Stored user {record['government_id']}")
+        return True
+
+    def get_user_from_dynamodb(self, government_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Retrieves user credentials from AWS DynamoDB table `resqfly_users` by partition key `government_id`.
+        """
+        table_name = os.environ.get("DYNAMODB_USERS_TABLE", "resqfly_users")
+        gid = str(government_id).strip().upper()
+
+        if self.is_connected and self.boto3_session:
+            try:
+                dynamodb = self.boto3_session.resource("dynamodb", region_name=self.region)
+                table = dynamodb.Table(table_name)
+                res = table.get_item(Key={"government_id": gid})
+                item = res.get("Item")
+                if item:
+                    logger.info(f"Retrieved user from DynamoDB {table_name}: {gid}")
+                    return item
+            except Exception as exc:
+                logger.error(f"DynamoDB GetItem Error: {exc} | Table: {table_name} | Key: {gid}")
+
+        return None
+
     def upload_evidence_to_s3(self, key: str, data_bytes: bytes, content_type: str = "image/jpeg") -> Optional[str]:
         """Uploads detection evidence to S3 bucket."""
         if self.is_connected and self.boto3_session:

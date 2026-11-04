@@ -20,28 +20,34 @@ export default function RescueScreen({ shelters = [], alerts = [], onStateRefres
   const [toast, setToast] = useState(null);
   const [teams, setTeams] = useState([
     {
-      id: 'TEAM-ALPHA',
-      name: 'Coastal Rescue Boat Team Alpha',
+      id: 'UNIT-01',
+      name: 'RESCUE UNIT-01 [ALPHA WATERCRAFT SQUAD] • Rapid Inundation Response',
+      leader: 'Capt. Liam Vance (Callsign: TIDE-LEAD)',
       asset: 'Twin-Engine Inflatable Flood Craft (Capacity: 12)',
       status: 'en_route',
       target: 'North Haven Community School (SHELTER-01)',
-      eta: '8 mins'
+      coordinates: '41.3850° N, -70.5280° W',
+      eta: '6 mins'
     },
     {
-      id: 'TEAM-BRAVO',
-      name: 'High-Water Evacuation Transporter Bravo',
-      asset: '6x6 Amphibious Vehicle (Capacity: 25)',
+      id: 'UNIT-02',
+      name: 'RESCUE UNIT-02 [BRAVO AMPHIBIOUS TEAM] • Shallow Water Evacuation',
+      leader: 'Lt. Marcus Hayes (Callsign: AMPHI-ONE)',
+      asset: '6x6 Amphibious Tracked Vehicle (Capacity: 25)',
       status: 'standby',
       target: 'West Pier Sector #14',
+      coordinates: '41.3835° N, -70.5295° W',
       eta: 'Standby at Base'
     },
     {
-      id: 'TEAM-CHARLIE',
-      name: 'Disaster Medical Response Unit',
-      asset: 'Mobile Triage Unit (Hospital Grounds)',
+      id: 'AIR-03',
+      name: 'AIR-SUPPORT [LIFELINE-CHARLIE] • Drone Airdrop Cargo Unit',
+      leader: 'Flight Officer Sarah Chen (Callsign: AIR-DROP-CHG)',
+      asset: 'Autonomous Heavy-Lift Relief Drone (15kg Payload)',
       status: 'active',
-      target: 'Harborview Regional Emergency Hospital',
-      eta: 'On-site'
+      target: 'Isolated Fisherman Pier House #14',
+      coordinates: '41.3862° N, -70.5270° W',
+      eta: 'On-station (Airdrop Ready)'
     }
   ]);
 
@@ -151,20 +157,47 @@ export default function RescueScreen({ shelters = [], alerts = [], onStateRefres
 
           <div className="space-y-2">
             {criticalAlerts.map((a) => (
-              <div key={a.id} className="p-3.5 rounded-xl bg-[#111C2D] border border-[#FF4D5D]/40 flex items-center justify-between gap-4">
-                <div>
-                  <div className="text-xs font-bold text-white">{a.title}</div>
-                  <div className="text-[11px] text-slate-300 mt-0.5">{a.message}</div>
+              <div key={a.id} className="p-4 rounded-xl bg-[#111C2D] border border-[#FF4D5D]/50 space-y-3">
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <div className="text-xs font-bold text-white flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full bg-[#FF4D5D] animate-ping" />
+                      <span>{a.title}</span>
+                    </div>
+                    <div className="text-[11px] text-slate-300 mt-1">{a.message}</div>
+                  </div>
+
+                  {!a.acknowledged && (
+                    <button
+                      onClick={() => handleAcknowledgeAlert(a.id, a.title)}
+                      className="shrink-0 px-3.5 py-1.5 rounded-xl bg-[#FF4D5D] hover:bg-[#FF4D5D]/90 text-white font-black text-xs cursor-pointer shadow-md transition-all active:scale-95"
+                    >
+                      Acknowledge Alert
+                    </button>
+                  )}
                 </div>
 
-                {!a.acknowledged && (
-                  <button
-                    onClick={() => handleAcknowledgeAlert(a.id, a.title)}
-                    className="shrink-0 px-3 py-1.5 rounded-xl bg-[#FF4D5D] hover:bg-[#FF4D5D]/90 text-white font-bold text-xs cursor-pointer shadow-md transition-all active:scale-95"
-                  >
-                    Acknowledge Alert
-                  </button>
-                )}
+                {/* Prominently Assigned Tactical Unit Callout */}
+                <div className="p-2.5 rounded-lg bg-[#172438] border border-[#22354E] grid grid-cols-1 sm:grid-cols-4 gap-2 text-[10px] font-mono">
+                  <div>
+                    <span className="text-slate-400 block uppercase">Assigned Unit:</span>
+                    <span className="text-[#35D6F2] font-bold">RESCUE UNIT-01 [ALPHA WATERCRAFT SQUAD]</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-400 block uppercase">Team Leader Callsign:</span>
+                    <span className="text-[#FF8A24] font-bold">TIDE-LEAD (Capt. Vance)</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-400 block uppercase">Target Coordinates:</span>
+                    <span className="text-white font-bold">41.3850° N, -70.5280° W</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-400 block uppercase">Dispatch Status:</span>
+                    <span className="px-2 py-0.5 rounded bg-[#10B981]/20 text-[#10B981] border border-[#10B981]/40 font-black inline-block mt-0.5">
+                      EN ROUTE • ACTIVE
+                    </span>
+                  </div>
+                </div>
               </div>
             ))}
           </div>
@@ -251,11 +284,17 @@ export default function RescueScreen({ shelters = [], alerts = [], onStateRefres
             >
               <div>
                 <div className="flex items-center gap-2">
-                  <span className="font-mono font-bold text-[#FF8A24]">{team.id}</span>
+                  <span className="font-mono font-black text-[#FF8A24] px-1.5 py-0.5 rounded bg-[#FF8A24]/10 border border-[#FF8A24]/30 text-[10px]">{team.id}</span>
                   <span className="font-bold text-white text-sm">{team.name}</span>
                 </div>
-                <div className="text-[11px] text-slate-400 mt-0.5">{team.asset}</div>
-                <div className="text-[11px] text-[#35D6F2] font-mono mt-1">Assigned Target: {team.target}</div>
+                <div className="text-[11px] text-slate-300 mt-1 flex flex-wrap items-center gap-3 font-mono">
+                  <span className="text-[#35D6F2]">👤 {team.leader}</span>
+                  <span className="text-slate-400">🚤 {team.asset}</span>
+                </div>
+                <div className="text-[11px] text-slate-300 font-mono mt-1 flex flex-wrap items-center gap-3">
+                  <span className="text-[#FF8A24]">🎯 Target: {team.target}</span>
+                  <span className="text-slate-400">📍 GPS: {team.coordinates}</span>
+                </div>
               </div>
 
               <div className="text-right shrink-0 flex flex-col items-end">

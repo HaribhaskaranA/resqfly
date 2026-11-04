@@ -47,6 +47,16 @@ tables = [
             {"AttributeName": "mission_id", "AttributeType": "S"}
         ],
         "BillingMode": "PAY_PER_REQUEST"
+    },
+    {
+        "TableName": os.getenv("DYNAMODB_USERS_TABLE", "resqfly_users"),
+        "KeySchema": [
+            {"AttributeName": "government_id", "KeyType": "HASH"}
+        ],
+        "AttributeDefinitions": [
+            {"AttributeName": "government_id", "AttributeType": "S"}
+        ],
+        "BillingMode": "PAY_PER_REQUEST"
     }
 ]
 

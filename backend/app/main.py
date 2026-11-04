@@ -95,6 +95,33 @@ app.include_router(auth_router, prefix="/api")
 def get_cloud_status():
     return aws_adapter.get_cloud_status()
 
+@app.get("/api/aws/status")
+def get_aws_status():
+    """Exposes real-time connection status for DynamoDB and AWS IoT Core MQTT."""
+    return {
+        "status": "connected" if aws_adapter.is_connected else "simulated",
+        "dynamodb": {
+            "status": "connected" if aws_adapter.is_connected else "simulated",
+            "region": aws_adapter.region,
+            "tables": ["resqfly_missions", "resqfly_telemetry", "resqfly_users"],
+            "telemetry_synced": len(aws_adapter.local_dynamodb_records.get("telemetry", [])),
+            "missions_synced": len(aws_adapter.local_dynamodb_records.get("missions", []))
+        },
+        "iot_core": {
+            "status": "connected" if aws_adapter.is_connected else "simulated",
+            "protocol": "MQTT/HTTPS (QoS 1)",
+            "endpoint": aws_adapter.iot_endpoint or f"data.iot.{aws_adapter.region}.amazonaws.com",
+            "topics": [
+                "resqfly/telemetry/scout-alpha",
+                "resqfly/telemetry/lifeline-charlie",
+                "resqfly/alerts/emergency"
+            ],
+            "messages_published": aws_adapter.cloud_events_dispatched
+        },
+        "account_id": aws_adapter.account_id or "312469489912",
+        "last_sync": aws_adapter.last_sync_timestamp or datetime.now(timezone.utc).isoformat()
+    }
+
 @app.post("/api/ai/incident-brief")
 def get_incident_brief(payload: dict = None):
     prompt = payload.get("prompt", "Summarize current coastal village flood state and drone deployments.") if payload else "Summarize flood situation."

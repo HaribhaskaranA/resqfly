@@ -7,6 +7,7 @@ import time
 from datetime import datetime, timezone
 from typing import Optional, Dict
 from app.models.auth import UserModel, RegisterRequest, OTPVerifyRequest, LoginRequest
+from app.aws.adapter import aws_adapter
 
 # ─── Pre-seeded Allowed Government IDs ───────────────────────────────────────
 # Format: GOV-DM-XXX = Disaster Management Command Center staff
@@ -53,6 +54,21 @@ _users["FR-001"] = UserModel(
     is_verified=True,
     created_at=datetime.now(timezone.utc).isoformat()
 )
+
+# Seed default demo accounts to DynamoDB resqfly_users on load
+try:
+    for u in _users.values():
+        aws_adapter.sync_user_to_dynamodb({
+            "government_id": u.gov_id,
+            "name": u.full_name,
+            "email": u.email,
+            "role": "COORDINATOR" if u.role == "command_center" else "RESCUE_TEAM",
+            "password_hash": u.password_hash,
+            "verified": u.is_verified,
+            "created_at": u.created_at
+        })
+except Exception:
+    pass
 
 # ─── Auth Engine Functions ────────────────────────────────────────────────────
 
@@ -124,13 +140,50 @@ def verify_otp(req: OTPVerifyRequest) -> dict:
     user.is_verified = True
     user.otp_code = None
     user.otp_expires_at = None
+
+    # Sync verified user record to AWS DynamoDB resqfly_users table
+    try:
+        aws_adapter.sync_user_to_dynamodb({
+            "government_id": user.gov_id,
+            "name": user.full_name,
+            "email": user.email,
+            "role": "COORDINATOR" if user.role == "command_center" else "RESCUE_TEAM",
+            "password_hash": user.password_hash,
+            "verified": True,
+            "created_at": user.created_at
+        })
+    except Exception as exc:
+        pass
+
     return {"success": True, "message": "Identity verified. You may now log in.", "gov_id": gid}
 
 
 def login_user(req: LoginRequest) -> dict:
-    """Validates gov_id + password, returns session token."""
+    """Validates gov_id + password from in-memory cache or DynamoDB resqfly_users, returns session token."""
     gid = req.gov_id.strip().upper()
     user = _users.get(gid)
+
+    # If user not in local memory, check AWS DynamoDB resqfly_users
+    if not user:
+        try:
+            cloud_user = aws_adapter.get_user_from_dynamodb(gid)
+            if cloud_user:
+                db_role = str(cloud_user.get("role", "COORDINATOR")).upper()
+                mapped_role = "command_center" if db_role in ("COORDINATOR", "COMMAND_CENTER") else "field_rescue"
+                user = UserModel(
+                    id=str(uuid.uuid4()),
+                    full_name=str(cloud_user.get("name", "Authorized Officer")),
+                    email=str(cloud_user.get("email", "")),
+                    department="Disaster Operations" if mapped_role == "command_center" else "Coastal Field Unit",
+                    gov_id=gid,
+                    password_hash=str(cloud_user.get("password_hash", "")),
+                    role=mapped_role,
+                    is_verified=bool(cloud_user.get("verified", True)),
+                    created_at=str(cloud_user.get("created_at", datetime.now(timezone.utc).isoformat()))
+                )
+                _users[gid] = user
+        except Exception:
+            pass
 
     if not user:
         return {"success": False, "error": "Government ID not found. Please register."}

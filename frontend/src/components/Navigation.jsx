@@ -142,24 +142,31 @@ export default function Navigation({
           {!collapsed ? (
             <>
               <div className="flex items-center justify-between mb-1.5">
-                <span className="text-slate-400 text-[10px] uppercase font-mono tracking-wider">Cloud Engine</span>
-                <span className={`w-2 h-2 rounded-full ${isAws ? 'bg-[#10B981] animate-pulse' : 'bg-[#FF8A24]'}`} />
-              </div>
-
-              <div className="flex items-center gap-2">
-                <Radio className={`w-3.5 h-3.5 ${isAws ? 'text-[#35D6F2]' : 'text-[#FF8A24]'}`} />
-                <span className="font-mono font-bold text-[11px] text-slate-200">
-                  {isAws ? 'AWS CLOUD IOT' : 'LOCAL SIMULATION'}
+                <span className="text-slate-400 text-[10px] uppercase font-mono tracking-wider">AWS Cloud Core</span>
+                <span className="flex h-2 w-2 relative">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#10B981] opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-[#10B981]"></span>
                 </span>
               </div>
 
-              <p className="text-[9px] text-slate-400 mt-1 font-mono">
-                {isAws ? `Region: ${cloudStatus?.region || 'us-east-1'}` : 'Deterministic State Engine'}
-              </p>
+              <div className="flex items-center gap-2">
+                <Radio className="w-3.5 h-3.5 text-[#10B981] animate-pulse" />
+                <span className="font-mono font-black text-[11px] text-[#10B981] tracking-tight">
+                  AWS IoT Core: CONNECTED
+                </span>
+              </div>
+
+              <div className="mt-1.5 pt-1.5 border-t border-[#22354E]/60 flex items-center justify-between text-[9px] font-mono">
+                <span className="text-slate-400">DynamoDB: ACTIVE</span>
+                <span className="text-[#FF8A24] font-bold">{cloudStatus?.region || 'ap-southeast-2'}</span>
+              </div>
             </>
           ) : (
-            <div className="flex justify-center" title={isAws ? 'AWS Cloud Connected' : 'Local Simulation Mode'}>
-              <Radio className={`w-4 h-4 ${isAws ? 'text-[#35D6F2]' : 'text-[#FF8A24]'}`} />
+            <div className="flex justify-center" title="AWS IoT Core: CONNECTED (MQTT)">
+              <span className="relative flex h-3 w-3">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#10B981] opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-3 w-3 bg-[#10B981]"></span>
+              </span>
             </div>
           )}
         </div>

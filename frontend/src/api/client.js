@@ -160,6 +160,11 @@ export async function fetchCloudStatus() {
   return res.json();
 }
 
+export async function fetchAwsStatus() {
+  const res = await fetch(`${API_BASE}/aws/status`);
+  return res.json();
+}
+
 export async function fetchIncidentBrief(prompt) {
   const res = await fetch(`${API_BASE}/ai/incident-brief`, {
     method: 'POST',

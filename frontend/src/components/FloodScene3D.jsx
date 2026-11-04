@@ -4,6 +4,69 @@ import { OrbitControls, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { Sun, Moon } from 'lucide-react';
 
+// Continuous Raycast / Elevation Lookup for North Haven Coastal Topography
+export function getTerrainHeight(x, z) {
+  // 1. Lighthouse cliff promontory (NW)
+  const dLighthouse = Math.hypot(x - (-140), z - (-130));
+  const lighthousePeak = Math.max(0, 14.0 - dLighthouse * 0.16);
+
+  // 2. East Ridge High Ground (NE/E)
+  const dEastRidge = Math.hypot(x - 90, z - 55);
+  const eastRidge = Math.max(0, 9.5 - dEastRidge * 0.10);
+
+  // 3. Hospital High Citadel
+  const dHospital = Math.hypot(x - 10, z - (-110));
+  const hospitalHill = Math.max(0, 6.0 - dHospital * 0.08);
+
+  // 4. Command Operations Outpost Plateau
+  const dOutpost = Math.hypot(x - 0, z - 0);
+  const outpostPlateau = Math.max(0, 10.0 - dOutpost * 0.18);
+
+  // 5. St. Jude Chapel Hill
+  const dChapel = Math.hypot(x - 85, z - 70);
+  const chapelHill = Math.max(0, 4.5 - dChapel * 0.12);
+
+  // 6. Natural Coastal Slope rising from West coastline to East hills
+  const broadSlope = (x * 0.02 + z * 0.012) + 2.8;
+
+  // 7. Coastal Canal and Inundation Basin Trough
+  const canalDist = Math.abs((x + 75) + Math.sin(z * 0.025) * 12);
+  const canalDepression = Math.max(0, 2.2 - canalDist * 0.07);
+
+  let elevation = Math.max(broadSlope, lighthousePeak, eastRidge, hospitalHill, outpostPlateau, chapelHill) - canalDepression;
+
+  // Gentle procedural undulation
+  elevation += Math.sin(x * 0.04) * Math.cos(z * 0.04) * 0.35;
+
+  return Math.max(0.4, Math.min(16.5, elevation));
+}
+
+// 3D Sculpted Terrain Mesh matching Elevation Model
+function SculptedTerrain({ isDaylight }) {
+  const geom = useMemo(() => {
+    const plane = new THREE.PlaneGeometry(650, 650, 64, 64);
+    const pos = plane.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i);
+      const z = -pos.getY(i); // After rotation [-PI/2, 0, 0], plane Y translates to -Z
+      const y = getTerrainHeight(x, z);
+      pos.setZ(i, y); // plane local Z becomes world +Y
+    }
+    plane.computeVertexNormals();
+    return plane;
+  }, []);
+
+  return (
+    <mesh geometry={geom} rotation={[-Math.PI / 2, 0, 0]} receiveShadow position={[0, 0, 0]}>
+      <meshStandardMaterial
+        color={isDaylight ? '#27374A' : '#0B1524'}
+        roughness={0.88}
+        metalness={0.12}
+      />
+    </mesh>
+  );
+}
+
 // Animated Undulating Floodwater Mesh
 function AnimatedWater({ floodLevel, showRiskZones, isDaylight }) {
   const meshRef = useRef();
@@ -76,30 +139,33 @@ function CoastalTrees() {
 
   return (
     <group>
-      {treePositions.map((t, idx) => (
-        <group key={idx} position={[t.x, t.y, t.z]} scale={[t.scale, t.scale, t.scale]}>
-          {/* Trunk */}
-          <mesh position={[0, 1.2, 0]}>
-            <cylinderGeometry args={[0.25, 0.35, 2.4, 6]} />
-            <meshStandardMaterial color="#2d1e18" roughness={0.9} />
-          </mesh>
-          {/* Lower Foliage */}
-          <mesh position={[0, 2.8, 0]}>
-            <coneGeometry args={[1.6, 2.4, 6]} />
-            <meshStandardMaterial color={idx % 4 === 0 ? '#b45309' : '#14532d'} roughness={0.8} />
-          </mesh>
-          {/* Middle Foliage */}
-          <mesh position={[0, 4.0, 0]}>
-            <coneGeometry args={[1.2, 2.0, 6]} />
-            <meshStandardMaterial color={idx % 4 === 0 ? '#92400e' : '#166534'} roughness={0.8} />
-          </mesh>
-          {/* Top Tip */}
-          <mesh position={[0, 5.0, 0]}>
-            <coneGeometry args={[0.8, 1.6, 6]} />
-            <meshStandardMaterial color={idx % 4 === 0 ? '#78350f' : '#15803d'} roughness={0.8} />
-          </mesh>
-        </group>
-      ))}
+      {treePositions.map((t, idx) => {
+        const treeY = getTerrainHeight(t.x, t.z);
+        return (
+          <group key={idx} position={[t.x, treeY, t.z]} scale={[t.scale, t.scale, t.scale]}>
+            {/* Trunk */}
+            <mesh position={[0, 1.2, 0]}>
+              <cylinderGeometry args={[0.25, 0.35, 2.4, 6]} />
+              <meshStandardMaterial color="#2d1e18" roughness={0.9} />
+            </mesh>
+            {/* Lower Foliage */}
+            <mesh position={[0, 2.8, 0]}>
+              <coneGeometry args={[1.6, 2.4, 6]} />
+              <meshStandardMaterial color={idx % 4 === 0 ? '#b45309' : '#14532d'} roughness={0.8} />
+            </mesh>
+            {/* Middle Foliage */}
+            <mesh position={[0, 4.0, 0]}>
+              <coneGeometry args={[1.2, 2.0, 6]} />
+              <meshStandardMaterial color={idx % 4 === 0 ? '#92400e' : '#166534'} roughness={0.8} />
+            </mesh>
+            {/* Top Tip */}
+            <mesh position={[0, 5.0, 0]}>
+              <coneGeometry args={[0.8, 1.6, 6]} />
+              <meshStandardMaterial color={idx % 4 === 0 ? '#78350f' : '#15803d'} roughness={0.8} />
+            </mesh>
+          </group>
+        );
+      })}
     </group>
   );
 }
@@ -243,9 +309,10 @@ function ArachnidCrawlerMesh({ id = 'ALPHA', startPos = [-45, 1.8, -25], radius 
     const t = clock.getElapsedTime() * speed;
     const x = startPos[0] + Math.cos(t) * radius;
     const z = startPos[2] + Math.sin(t) * radius;
+    const groundY = getTerrainHeight(x, z);
     groupRef.current.position.x = x;
     groupRef.current.position.z = z;
-    groupRef.current.position.y = startPos[1] + Math.abs(Math.sin(clock.getElapsedTime() * 4)) * 0.12;
+    groupRef.current.position.y = groundY + Math.abs(Math.sin(clock.getElapsedTime() * 4)) * 0.12;
     groupRef.current.rotation.y = -t + Math.PI / 2;
 
     legsRef.current.forEach((leg, i) => {
@@ -319,10 +386,12 @@ function ArachnidCrawlerMesh({ id = 'ALPHA', startPos = [-45, 1.8, -25], radius 
   );
 }
 
-// 3D Building Representation with Visible Illumination & Rooftop Cobwebs
+// 3D Building Representation with Raycast Elevation Clamping & Visible Illumination
 function VillageBuilding({ building, floodLevel, onSelect, showLabels }) {
-  const isSubmerged = floodLevel >= building.y;
-  const floodDepth = Math.max(0, floodLevel - building.y);
+  // Clamp all building mesh base transforms directly to the terrain elevation mesh:
+  const groundY = getTerrainHeight(building.x, building.z);
+  const isSubmerged = floodLevel >= groundY;
+  const floodDepth = Math.max(0, floodLevel - groundY);
 
   // Roof & Accent color
   const roofColor = useMemo(() => {
@@ -340,14 +409,14 @@ function VillageBuilding({ building, floodLevel, onSelect, showLabels }) {
   const wallColor = isSubmerged ? '#1E293B' : '#2A3449';
 
   return (
-    <group position={[building.x, building.y, building.z]} onClick={(e) => { e.stopPropagation(); onSelect(building); }}>
-      {/* Foundation & Walls */}
+    <group position={[building.x, groundY, building.z]} onClick={(e) => { e.stopPropagation(); onSelect && onSelect(building); }}>
+      {/* Foundation & Walls - anchored cleanly at ground level */}
       <mesh position={[0, building.height / 2, 0]} castShadow receiveShadow>
         <boxGeometry args={[building.width, building.height, building.depth]} />
         <meshStandardMaterial color={wallColor} roughness={0.65} metalness={0.2} />
       </mesh>
 
-      {/* Roof */}
+      {/* Roof - flat and anchored on top of walls */}
       <mesh position={[0, building.height + 1.2, 0]}>
         <coneGeometry args={[Math.max(building.width, building.depth) * 0.72, 3.2, 4]} />
         <meshStandardMaterial color={roofColor} roughness={0.6} />
@@ -627,9 +696,10 @@ function HumanoidVictim({ offset = [0, 0, 0], isLocated = false }) {
 function PeopleClusterMesh({ cluster }) {
   const victimCount = Math.min(cluster.count, 6);
   const isLocated = Boolean(cluster.detected_by_drone);
+  const clusterY = getTerrainHeight(cluster.x, cluster.z);
 
   return (
-    <group position={[cluster.x, cluster.y, cluster.z]}>
+    <group position={[cluster.x, clusterY, cluster.z]}>
       {[...Array(victimCount)].map((_, i) => (
         <HumanoidVictim
           key={i}
@@ -788,21 +858,8 @@ export default function FloodScene3D({
           shadow-mapSize-height={2048}
         />
 
-        {/* Ground Terrain with Elevation Texture */}
-        <mesh position={[0, -0.6, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
-          <planeGeometry args={[650, 650, 24, 24]} />
-          <meshStandardMaterial color={isDaylight ? '#27374A' : '#0D1726'} roughness={0.88} />
-        </mesh>
-
-        {/* Asphalt Roads and Elevated Bridges */}
-        <mesh position={[0, 0.08, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
-          <planeGeometry args={[16, 420]} />
-          <meshStandardMaterial color={isDaylight ? '#334155' : '#1E293B'} roughness={0.7} />
-        </mesh>
-        <mesh position={[0, 0.08, 0]} rotation={[-Math.PI / 2, 0, Math.PI / 2]} receiveShadow>
-          <planeGeometry args={[14, 420]} />
-          <meshStandardMaterial color={isDaylight ? '#334155' : '#1E293B'} roughness={0.7} />
-        </mesh>
+        {/* 3D Sculpted Ground Terrain with Normalized Raycast Elevation */}
+        <SculptedTerrain isDaylight={isDaylight} />
 
         {/* Coastal Trees and Environment */}
         <CoastalTrees />
@@ -810,7 +867,7 @@ export default function FloodScene3D({
         {/* Dynamic Reflective Animated Floodwater */}
         <AnimatedWater floodLevel={floodLevel} showRiskZones={showRiskZones} isDaylight={isDaylight} />
 
-        {/* 40 Village Buildings */}
+        {/* 40 Village Buildings - Base Transforms Clamped Directly to Raycasted Elevation */}
         {buildings.map((b) => (
           <VillageBuilding
             key={b.id}
@@ -820,8 +877,8 @@ export default function FloodScene3D({
           />
         ))}
 
-        {/* Blackwood Lighthouse Landmark */}
-        <LighthouseTower position={[-140.0, 14.0, -130.0]} />
+        {/* Blackwood Lighthouse Landmark - Anchored Flush onto Coastal Promontory */}
+        <LighthouseTower position={[-140.0, getTerrainHeight(-140.0, -130.0), -130.0]} />
 
         {/* Synthetic Stranded People Clusters */}
         {showPeople && peopleClusters.map((pc) => (
