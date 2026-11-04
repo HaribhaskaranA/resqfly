@@ -1,7 +1,13 @@
-# Secrets and environment variables
+# Secrets, keys, and environment variables
 .env
 *.env
 backend/.env
+!backend/.env.example
+*.pem
+*.key
+*.token
+*.cert
+*.crt
 aws_credentials*
 *accessKey*
 *accessKeys*

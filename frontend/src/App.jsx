@@ -70,12 +70,12 @@ export default function App() {
   const [cloudStatus, setCloudStatus] = useState(null);
   const [observations, setObservations] = useState([]);
 
-  // ─── Restore session on mount ─────────────────────────────────────────────
+  // ─── Enforce strict Auth Gate on mount: always greet user with Login Page ──
   useEffect(() => {
-    const saved = loadSession();
-    if (saved?.token) {
-      setCurrentUser(saved);
-    }
+    // Strictly require credentials on platform open - unauthenticated visitors see Login
+    saveSession(null);
+    setCurrentUser(null);
+    setAuthView('login');
     setSessionLoaded(true);
   }, []);
 

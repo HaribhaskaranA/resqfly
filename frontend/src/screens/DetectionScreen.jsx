@@ -24,7 +24,12 @@ import {
   History,
   ToggleLeft,
   ToggleRight,
-  MapPin
+  MapPin,
+  BookOpen,
+  Info,
+  HelpCircle,
+  ChevronDown,
+  ChevronUp
 } from 'lucide-react';
 import {
   analyzeDetectionFrame,
@@ -62,6 +67,7 @@ export default function DetectionScreen({ observations = [], onStateRefresh }) {
 
   // Autonomous / Manual Mode
   const [executionMode, setExecutionMode] = useState('autonomous'); // 'autonomous' | 'manual'
+  const [guideOpen, setGuideOpen] = useState(true); // User Operational Guidance panel
   const [missionHistory, setMissionHistory] = useState([]);
   const [manualPendingApproval, setManualPendingApproval] = useState(null); // patrol result awaiting coordinator approval
   const [autoDispatchBanner, setAutoDispatchBanner] = useState(null); // { action, asset, sector }
@@ -335,6 +341,82 @@ export default function DetectionScreen({ observations = [], onStateRefresh }) {
         <div className="text-[11px] font-mono text-slate-400">
           Model: <strong className="text-[#35D6F2]">resqfly_aerial_best.pt</strong> • FLIR Lepton 3.5 IR Filter
         </div>
+      </div>
+
+      {/* Operational Guidance & Mode Switcher Manual Banner */}
+      <div className="rounded-2xl border border-[#35D6F2]/40 bg-[#111C2D]/95 backdrop-blur-md overflow-hidden shadow-2xl">
+        <div
+          onClick={() => setGuideOpen(!guideOpen)}
+          className="p-4 bg-gradient-to-r from-[#172438] via-[#111C2D] to-[#172438] border-b border-[#22354E] flex items-center justify-between cursor-pointer select-none"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-xl bg-[#35D6F2]/20 border border-[#35D6F2]/40 flex items-center justify-center text-[#35D6F2]">
+              <BookOpen className="w-4 h-4" />
+            </div>
+            <div>
+              <h2 className="text-xs font-mono font-black text-white uppercase tracking-wider flex items-center gap-2">
+                <span>AI Detection Center • Operational Guidance Manual</span>
+                <span className="px-2 py-0.5 rounded text-[9px] bg-[#35D6F2]/20 text-[#35D6F2] border border-[#35D6F2]/40">
+                  Field Guide
+                </span>
+              </h2>
+              <p className="text-[11px] text-slate-400 font-mono mt-0.5">
+                Instructions for Manual AI Mode, Switching to Auto Mode, and Calibrated Demo Data.
+              </p>
+            </div>
+          </div>
+          <button className="text-slate-400 hover:text-white transition-colors p-1" title={guideOpen ? "Collapse Manual" : "Expand Manual"}>
+            {guideOpen ? <ChevronUp className="w-5 h-5" /> : <ChevronDown className="w-5 h-5" />}
+          </button>
+        </div>
+
+        {guideOpen && (
+          <div className="p-5 space-y-4 text-xs font-mono">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {/* Column 1: Manual AI Mode */}
+              <div className="p-4 rounded-xl bg-[#172438] border border-[#22354E] space-y-2.5">
+                <div className="flex items-center gap-2 text-[#FF8A24] font-black text-xs uppercase">
+                  <Shield className="w-4 h-4" />
+                  <span>1. Using Manual AI Mode</span>
+                </div>
+                <ul className="space-y-2 text-[11px] text-slate-300 list-disc list-inside leading-relaxed">
+                  <li><strong className="text-white">Upload Custom Feeds:</strong> Click <code className="text-[#35D6F2] bg-[#0B1220] px-1 rounded">Upload RGB</code> or <code className="text-[#FF8A24] bg-[#0B1220] px-1 rounded">Upload FLIR</code> to upload drone footage, webcam frames, or aerial pictures.</li>
+                  <li><strong className="text-white">Run Triage:</strong> Click <code className="text-white bg-[#FF8A24]/30 px-1 rounded">Run Triage</code> or select a calibrated scenario (<span className="text-[#FF4D5D]">Critical</span>, <span className="text-[#10B981]">Safe</span>, <span className="text-[#35D6F2]">Clear</span>).</li>
+                  <li><strong className="text-white">Coordinator Review:</strong> In Manual Mode, AI triage alerts remain in review until the Incident Coordinator clicks <strong>Authorize & Deploy Mission</strong>.</li>
+                </ul>
+              </div>
+
+              {/* Column 2: Switching to Auto Mode */}
+              <div className="p-4 rounded-xl bg-[#172438] border border-[#22354E] space-y-2.5">
+                <div className="flex items-center gap-2 text-[#10B981] font-black text-xs uppercase">
+                  <Zap className="w-4 h-4" />
+                  <span>2. How to Switch to Auto Mode</span>
+                </div>
+                <ul className="space-y-2 text-[11px] text-slate-300 list-disc list-inside leading-relaxed">
+                  <li><strong className="text-white">Step 1:</strong> Flip the <strong className="text-white">AUTONOMOUS PATROL FEED</strong> toggle above to <span className="text-[#10B981] font-bold">ON</span> (green pulsing radar icon).</li>
+                  <li><strong className="text-white">Step 2:</strong> Set the Execution Mode toggle below to <span className="text-[#10B981] font-bold">AUTONOMOUS (AUTO-DISPATCH)</span>.</li>
+                  <li><strong className="text-white">Live Cycle:</strong> The patrol loop cycles through North Haven coastal sectors every 3.0s, computes physical water depth, and auto-dispatches rescue craft without waiting for manual confirmation.</li>
+                </ul>
+              </div>
+
+              {/* Column 3: Demo Data Notice */}
+              <div className="p-4 rounded-xl bg-[#172438] border border-[#35D6F2]/30 space-y-2.5 bg-gradient-to-b from-[#172438] to-[#111C2D]">
+                <div className="flex items-center gap-2 text-[#35D6F2] font-black text-xs uppercase">
+                  <Info className="w-4 h-4" />
+                  <span>3. Demo Data Calibration Notice</span>
+                </div>
+                <div className="text-[11px] text-slate-300 space-y-2 leading-relaxed">
+                  <p>
+                    <strong className="text-[#35D6F2]">Active Stream Engine:</strong> Autonomous Mode currently operates on <strong>realistic calibrated demo scenario data</strong>.
+                  </p>
+                  <p className="text-slate-400">
+                    This continuously streams simulated multi-sector telemetry, aerial thermal hotspots, and physical landmark water depths (Bridge, Canal, School, Pier) for full evaluation without requiring live hardware drone cameras in flight.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {activeTab === 'dual_triage' ? (
