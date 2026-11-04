@@ -1,0 +1,93 @@
+@import "tailwindcss";
+
+:root {
+  --bg-primary: #0B1220;
+  --bg-secondary: #111C2D;
+  --bg-card: #172438;
+  --bg-card-hover: #1D2D45;
+  --border-subtle: #22354E;
+  --border-active: rgba(255, 138, 36, 0.4);
+  
+  --color-cyan: #35D6F2;
+  --color-orange: #FF8A24;
+  --color-red: #FF4D5D;
+  --color-purple: #A855F7;
+  --color-emerald: #10B981;
+  
+  --text-main: #F8FAFC;
+  --text-muted: #94A3B8;
+  --text-dim: #64748B;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--bg-primary);
+  color: var(--text-main);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Inter", "Helvetica Neue", Arial, sans-serif;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Command Center Panel */
+.panel-card {
+  background: #172438;
+  border: 1px solid #22354E;
+  border-radius: 14px;
+  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.35);
+  transition: all 0.2s ease-in-out;
+}
+
+.panel-card:hover {
+  border-color: rgba(255, 138, 36, 0.3);
+  box-shadow: 0 8px 28px -4px rgba(0, 0, 0, 0.45);
+}
+
+.panel-card-glow-cyan {
+  border-color: rgba(53, 214, 242, 0.35);
+  box-shadow: 0 0 25px -5px rgba(53, 214, 242, 0.15);
+}
+
+.panel-card-glow-orange {
+  border-color: rgba(255, 138, 36, 0.4);
+  box-shadow: 0 0 25px -5px rgba(255, 138, 36, 0.18);
+}
+
+.panel-card-glow-red {
+  border-color: rgba(255, 77, 93, 0.4);
+  box-shadow: 0 0 25px -5px rgba(255, 77, 93, 0.2);
+}
+
+/* Tactical Topography / Grid Background */
+.bg-grid-pattern {
+  background-image: 
+    linear-gradient(to right, rgba(34, 53, 78, 0.25) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(34, 53, 78, 0.25) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+/* Sleek Command Center Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #0B1220;
+}
+::-webkit-scrollbar-thumb {
+  background: #22354E;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #FF8A24;
+}
+
+/* Radar Sweep Keyframe */
+@keyframes radar-sweep {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.animate-radar {
+  animation: radar-sweep 4s linear infinite;
+}

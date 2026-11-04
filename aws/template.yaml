@@ -1,0 +1,211 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  RESQFLY: Intelligent Multi-Drone Disaster Rescue & Relief System
+  Serverless Infrastructure & IoT Fleet Pipeline
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+  TablePrefix:
+    Type: String
+    Default: resqfly
+
+Resources:
+  # =================================================================
+  # S3 EVIDENCE & SIMULATION ASSETS STORAGE
+  # =================================================================
+  EvidenceBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${TablePrefix}-evidence-${AWS::AccountId}-${AWS::Region}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  # =================================================================
+  # DYNAMODB PERSISTENT DISASTER & FLEET TABLES
+  # =================================================================
+  DronesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${TablePrefix}-drones'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+
+  MissionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${TablePrefix}-missions'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+
+  SheltersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${TablePrefix}-shelters'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+
+  RequestsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${TablePrefix}-requests'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+
+  AlertsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${TablePrefix}-alerts'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+
+  # =================================================================
+  # AWS LAMBDA SERVERLESS EVENT HANDLERS
+  # =================================================================
+  TelemetryProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${TablePrefix}-telemetry-processor'
+      CodeUri: ./lambda/
+      Handler: telemetry_processor.lambda_handler
+      Runtime: python3.11
+      Timeout: 10
+      MemorySize: 256
+      Environment:
+        Variables:
+          AWS_DYNAMODB_PREFIX: !Ref TablePrefix
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Sub '${TablePrefix}-drones'
+        - CloudWatchPutMetricPolicy: {}
+
+  MissionDispatcherFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${TablePrefix}-mission-dispatcher'
+      CodeUri: ./lambda/
+      Handler: mission_dispatcher.lambda_handler
+      Runtime: python3.11
+      Timeout: 15
+      MemorySize: 512
+      Environment:
+        Variables:
+          AWS_DYNAMODB_PREFIX: !Ref TablePrefix
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Sub '${TablePrefix}-missions'
+        - Statement:
+            - Effect: Allow
+              Action:
+                - iot:Publish
+              Resource: !Sub 'arn:aws:iot:${AWS::Region}:${AWS::AccountId}:topic/resqfly/drone/*/command'
+
+  AlertNotifierFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub '${TablePrefix}-alert-notifier'
+      CodeUri: ./lambda/
+      Handler: alert_notifier.lambda_handler
+      Runtime: python3.11
+      Timeout: 10
+      MemorySize: 256
+      Policies:
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt AlertsSNSTopic.TopicName
+
+  AlertsSNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${TablePrefix}-critical-alerts'
+
+  # =================================================================
+  # AWS IOT CORE MQTT TELEMETRY TOPIC RULE
+  # =================================================================
+  IoTRuleTelemetry:
+    Type: AWS::IoT::TopicRule
+    Properties:
+      RuleName: !Sub '${TablePrefix}_drone_telemetry_rule'
+      TopicRulePayload:
+        RuleDisabled: false
+        Sql: "SELECT * FROM 'resqfly/drone/+/telemetry'"
+        Actions:
+          - Lambda:
+              FunctionArn: !GetAtt TelemetryProcessorFunction.Arn
+
+  IoTRuleLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt TelemetryProcessorFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: iot.amazonaws.com
+      SourceArn: !GetAtt IoTRuleTelemetry.Arn
+
+  # =================================================================
+  # AMAZON COGNITO AUTHENTICATION
+  # =================================================================
+  CognitoUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub '${TablePrefix}-user-pool'
+      AutoVerifiedAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+          RequireUppercase: true
+
+  CognitoUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub '${TablePrefix}-web-client'
+      UserPoolId: !Ref CognitoUserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+
+Outputs:
+  EvidenceBucketName:
+    Value: !Ref EvidenceBucket
+  UserPoolId:
+    Value: !Ref CognitoUserPool
+  UserPoolClientId:
+    Value: !Ref CognitoUserPoolClient

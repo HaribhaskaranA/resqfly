@@ -1,0 +1,427 @@
+"""Comprehensive Automated Tests for RESQFLY Operations Core."""
+import sys
+import os
+import unittest
+
+# Add backend directory to sys.path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "backend")))
+
+from app.core.state import store
+from app.models.drone import DroneModel, DronePosition
+from app.models.mission import MissionModel
+from app.models.shelter import ShelterModel
+from app.models.request import EmergencyRequestModel
+from app.core.shelter_engine import calculate_shelter_risk
+from app.core.priority_engine import calculate_emergency_priority
+from app.core.mission_engine import assign_optimal_drone, evaluate_drone_suitability
+from app.aws.adapter import aws_adapter
+
+class TestResqflyCore(unittest.TestCase):
+    def setUp(self):
+        store.reset_to_default_state()
+
+    def test_01_health_and_local_cloud_adapter(self):
+        status = aws_adapter.get_cloud_status()
+        self.assertIn("mode", status)
+        self.assertIn(status["mode"], ["local_simulation", "aws_connected"])
+        self.assertIn("services", status)
+
+    def test_02_drone_retrieval(self):
+        drones = list(store.drones.values())
+        self.assertEqual(len(drones), 4)
+        drone_ids = [d.id for d in drones]
+        self.assertIn("DRONE-01", drone_ids)
+        self.assertIn("DRONE-02", drone_ids)
+        self.assertIn("DRONE-03", drone_ids)
+        self.assertIn("DRONE-04", drone_ids)
+
+    def test_03_shelter_risk_calculation_low_vs_critical(self):
+        shelter = store.shelters["SHELTER-01"] # elevation = 2.2m
+        # Low flood level: 1.0m (well below 2.2m)
+        assess_low = calculate_shelter_risk(shelter, flood_water_level=1.0)
+        self.assertLess(assess_low.risk_score, 45.0)
+
+        # Critical flood level: 3.5m (well above 2.2m foundation)
+        shelter_flooded = shelter.model_copy()
+        shelter_flooded.road_accessible = False
+        shelter_flooded.structural_damage_reported = True
+        shelter_flooded.water_hours_remaining = 3.0
+        assess_critical = calculate_shelter_risk(shelter_flooded, flood_water_level=3.5)
+        self.assertGreaterEqual(assess_critical.risk_score, 80.0)
+        self.assertEqual(assess_critical.risk_level, "Critical")
+        self.assertEqual(assess_critical.recommended_review_priority, "Urgent Escalation")
+
+    def test_04_emergency_priority_calculation(self):
+        req = store.requests["REQ-101"]
+        score, factors = calculate_emergency_priority(req, local_flood_depth=2.0)
+        self.assertGreater(score, 70.0)
+        self.assertTrue(len(factors) > 0)
+
+    def test_05_intelligent_mission_assignment_lifeline_selected_for_supplies(self):
+        # Create supply mission requiring 4.5kg cargo (Lifeline can carry 15kg, Scout can only carry 3kg)
+        mission = MissionModel(
+            id="TEST-MSN-SUPPLY",
+            type="supply_delivery",
+            title="Heavy Water Cargo to West Pier",
+            target_location=DronePosition(x=-110.0, y=1.5, z=-30.0),
+            required_payload_kg=4.5,
+            status="pending"
+        )
+        selected, scores, rationale, route = assign_optimal_drone(list(store.drones.values()), mission)
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected.id, "DRONE-03") # LIFELINE-CHARLIE
+        self.assertTrue(len(route) > 0)
+
+    def test_06_payload_constraint_rejection(self):
+        # Scout has max_payload_kg = 3.0. A mission requiring 4.0kg must reject Scout.
+        scout = store.drones["DRONE-01"]
+        score = evaluate_drone_suitability(
+            drone=scout,
+            mission_type="supply_delivery",
+            target_pos=DronePosition(x=-20.0, y=2.0, z=-20.0),
+            required_payload_kg=4.0
+        )
+        self.assertFalse(score.is_eligible)
+        self.assertTrue(any("Payload constraint" in r for r in score.rejection_reasons))
+
+    def test_07_low_battery_constraint_rejection(self):
+        # If drone battery is depleted (e.g. 15%), it must be rejected for safe reserve (< 20%)
+        low_bat_drone = store.drones["DRONE-02"].model_copy()
+        low_bat_drone.battery = 14.0
+        score = evaluate_drone_suitability(
+            drone=low_bat_drone,
+            mission_type="shelter_inspection",
+            target_pos=DronePosition(x=-75.0, y=2.0, z=-60.0),
+            required_payload_kg=0.0
+        )
+        self.assertFalse(score.is_eligible)
+        self.assertTrue(any("Insufficient battery reserve" in r for r in score.rejection_reasons))
+
+    def test_08_flood_level_updates_and_submersion(self):
+        store.set_flood_level(3.0)
+        self.assertEqual(store.sim_state.flood_water_level, 3.0)
+        # Check that lower elevation buildings are marked submerged
+        submerged = [b for b in store.buildings if b.is_flooded]
+        self.assertGreater(len(submerged), 5)
+
+    def test_09_mission_tick_and_delivery_completion(self):
+        target = DronePosition(x=-10.0, y=12.0, z=5.0) # Near base
+        mission = MissionModel(
+            id="MSN-TICK-TEST",
+            type="supply_delivery",
+            title="Fast Delivery",
+            target_location=target,
+            target_id="REQ-101",
+            required_payload_kg=1.0,
+            status="in_progress",
+            assigned_drone_id="DRONE-03",
+            calculated_route=[]
+        )
+        store.missions[mission.id] = mission
+        drone = store.drones["DRONE-03"]
+        drone.position = DronePosition(x=-9.0, y=12.0, z=5.0) # 1m away
+        drone.status = "flying"
+
+        store.update_simulation_tick(delta_time_sec=1.0)
+        self.assertEqual(mission.status, "completed")
+        self.assertEqual(store.requests["REQ-101"].status, "delivered")
+
+    def test_10_multimodal_triage_decision_matrix(self):
+        from app.core.triage_engine import triage_engine_instance
+        
+        # Test Case A: Critical Danger (Submersion > 35% with confirmed people)
+        rgb_crit, th_crit = triage_engine_instance.generate_synthetic_stream_pair("critical")
+        res_crit = triage_engine_instance.process_triage(rgb_crit, th_crit)
+        self.assertEqual(res_crit["status"], "success")
+        self.assertGreater(res_crit["flood_submersion_pct"], 35.0)
+        self.assertGreater(res_crit["confirmed_people_count"], 0)
+        self.assertEqual(res_crit["system_status"], "CRITICAL_DANGER")
+        self.assertEqual(res_crit["recommended_action"], "ALERT_RESCUE_TEAM")
+        self.assertEqual(res_crit["drone_mission_dispatch"], "DISPATCH_RESCUE_BOAT")
+        self.assertTrue(len(res_crit["target_coordinates"]) > 0)
+
+        # Test Case B: Safe Zone (Submersion <= 35% with confirmed people)
+        rgb_safe, th_safe = triage_engine_instance.generate_synthetic_stream_pair("safe")
+        res_safe = triage_engine_instance.process_triage(rgb_safe, th_safe)
+        self.assertEqual(res_safe["status"], "success")
+        self.assertLessEqual(res_safe["flood_submersion_pct"], 35.0)
+        self.assertGreater(res_safe["confirmed_people_count"], 0)
+        self.assertEqual(res_safe["system_status"], "SAFE_ZONE")
+        self.assertEqual(res_safe["recommended_action"], "DISPATCH_FOOD")
+        self.assertEqual(res_safe["drone_mission_dispatch"], "DISPATCH_LIFELINE_DRONE")
+
+        # Test Case C: Clear (No human targets / hotspots)
+        rgb_clr, th_clr = triage_engine_instance.generate_synthetic_stream_pair("clear")
+        res_clr = triage_engine_instance.process_triage(rgb_clr, th_clr)
+        self.assertEqual(res_clr["status"], "success")
+        self.assertEqual(res_clr["confirmed_people_count"], 0)
+        self.assertEqual(res_clr["system_status"], "CLEAR")
+        self.assertEqual(res_clr["recommended_action"], "CONTINUE_PATROL")
+        self.assertEqual(res_clr["drone_mission_dispatch"], "CONTINUE_PATROL")
+
+    def test_11_helicopter_exhaust_filter_and_silt_mudflow_segmentation(self):
+        import cv2
+        import numpy as np
+        from app.core.triage_engine import triage_engine_instance
+
+        # 1. Thermal Aircraft Exclusion Test
+        # Create a thermal image with a helicopter exhaust blooming blob in the sky (top 20%)
+        # and 2 stranded humans in the lower road (bottom 30%)
+        th_test = np.zeros((500, 600, 3), dtype=np.uint8)
+        # Helicopter exhaust: horizontal blooming, y=60 (top 12%), saturated white-hot
+        cv2.ellipse(th_test, (300, 60), (45, 15), 0, 0, 360, (255, 255, 255), -1)
+        # Human 1: vertical aspect ratio, y=400 (bottom 20%)
+        cv2.ellipse(th_test, (200, 400), (6, 14), 0, 0, 360, (0, 80, 255), -1)
+        # Human 2: vertical aspect ratio, y=420 (bottom 16%)
+        cv2.ellipse(th_test, (400, 420), (6, 14), 0, 0, 360, (0, 80, 255), -1)
+
+        boxes, aircraft_detected = triage_engine_instance.detect_thermal_hotspots(th_test, return_aircraft=True)
+        self.assertTrue(aircraft_detected, "Aircraft turbine exhaust was not detected as aircraft operations")
+        self.assertEqual(len(boxes), 2, "Helicopter exhaust was falsely included in human count")
+        # Ensure all detected human boxes are in the lower 60%
+        for b in boxes:
+            self.assertGreaterEqual(b[1], 500 * 0.40, "Detected box was in the upper mid-air exclusion zone")
+
+        # 2. Silt & Mudflow Water Segmentation Test
+        # Muddy river frame (HSV Hue ~25, Saturation ~60, Value ~70)
+        rgb_muddy = np.zeros((400, 500, 3), dtype=np.uint8)
+        # Fill 80% of frame with muddy floodwater
+        rgb_muddy[:, 0:400] = [35, 55, 65]
+        flood_pct = triage_engine_instance.compute_rgb_flood_pct(rgb_muddy)
+        self.assertGreater(flood_pct, 70.0, "Muddy water was undercalculated")
+
+        # 3. Escalation test: if active aircraft detected with victims -> CRITICAL_DANGER
+        res = triage_engine_instance.process_triage(rgb_muddy, th_test)
+        self.assertEqual(res["system_status"], "CRITICAL_DANGER")
+        self.assertEqual(res["recommended_action"], "ALERT_RESCUE_TEAM")
+        self.assertEqual(res["drone_mission_dispatch"], "DISPATCH_RESCUE_BOAT")
+        self.assertIn("aircraft", res["tactical_reason"].lower())
+
+    def test_12_visdrone_aerial_weights_and_signboard_aspect_filter(self):
+        import cv2
+        import numpy as np
+        from app.core.detection_engine import detection_engine_instance
+        from app.core.triage_engine import triage_engine_instance
+
+        # 1. Weights path check
+        self.assertIsNotNone(detection_engine_instance.weights_path)
+        self.assertIn("resqfly_aerial_best.pt", detection_engine_instance.weights_path)
+        self.assertIsNotNone(triage_engine_instance.weights_path)
+        self.assertIn("resqfly_aerial_best.pt", triage_engine_instance.weights_path)
+
+        # 2. Aspect Ratio & Static Signboard Rejection Test:
+        # Create an RGB image with:
+        # - a square street signboard (40x40 px -> aspect 1.0) on the road
+        # - a human silhouette (14x32 px -> aspect 2.28)
+        h, w = 512, 640
+        rgb = np.zeros((h, w, 3), dtype=np.uint8)
+        # Background road in lower quadrant
+        ymin, ymax = int(h * 0.62), int(h * 0.96)
+        xmin, xmax = int(w * 0.22), int(w * 0.68)
+        rgb[ymin:ymax, xmin:xmax] = [90, 95, 100]
+
+        # Draw vertical human silhouette in road
+        hx, hy = xmin + 50, ymin + 40
+        cv2.circle(rgb, (hx + 5, hy - 4), 3, (200, 210, 220), -1)
+        cv2.ellipse(rgb, (hx + 5, hy + 8), (4, 10), 0, 0, 360, (180, 190, 200), -1)
+
+        # Run crowd detection without thermal backing
+        detected = detection_engine_instance.detect_rgb_ground_crowd(rgb)
+        # All detected boxes without thermal backing must have aspect >= 1.10
+        for b in detected:
+            bw = max(1, b[2] - b[0])
+            bh = max(1, b[3] - b[1])
+            aspect = bh / float(bw)
+            self.assertGreaterEqual(aspect, 1.10, f"Square/horizontal box was not discarded: aspect={aspect}")
+
+        # 3. Multi-modal decision contract verification
+        rgb_syn, th_syn = triage_engine_instance.generate_synthetic_stream_pair("critical")
+        contract = triage_engine_instance.process_triage(rgb_syn, th_syn)
+        required_keys = [
+            "status", "flood_submersion_pct", "flood_depth_meters", "landmark_reference",
+            "confirmed_people_count", "target_coordinates", "system_status",
+            "recommended_action", "drone_mission_dispatch", "tactical_reason", "processing_time_ms"
+        ]
+        for k in required_keys:
+            self.assertIn(k, contract, f"Missing contract key: {k}")
+
+    def test_13_thermal_local_contrast_and_aspect_ratio_filter(self):
+        import cv2
+        import numpy as np
+        from app.core.triage_engine import triage_engine_instance
+
+        # Create a thermal image with:
+        # 1. Wide heated concrete roof (width=120, height=35 -> aspect=0.29 < 1.3, area > 600)
+        # 2. Square heated slab (width=40, height=40 -> aspect=1.0 < 1.3)
+        # 3. Upright human victim (+5C warmer than surrounding background, width=10, height=22 -> aspect=2.2 >= 1.3, area=200 < 600)
+        h, w = 500, 600
+        th = np.zeros((h, w, 3), dtype=np.uint8)
+        th[:] = [30, 20, 25] # ambient cold background
+
+        # Heated roof (y=200, bottom half)
+        cv2.rectangle(th, (100, 200), (220, 235), (0, 70, 240), -1)
+
+        # Heated square slab
+        cv2.rectangle(th, (250, 300), (290, 340), (0, 80, 250), -1)
+
+        # Real upright human (+5C warmer than background)
+        cv2.ellipse(th, (420, 380), (5, 12), 0, 0, 360, (0, 85, 255), -1)
+
+        boxes = triage_engine_instance.detect_thermal_hotspots(th)
+        # Only the upright human must be kept; heated roof and slab must be stripped
+        self.assertEqual(len(boxes), 1, f"Expected 1 upright victim, got {len(boxes)}")
+        bw = max(1, boxes[0][2] - boxes[0][0])
+        bh = max(1, boxes[0][3] - boxes[0][1])
+        aspect = float(bh) / float(bw)
+        self.assertGreaterEqual(aspect, 1.30, f"Detected target aspect ratio was less than 1.3: {aspect}")
+        self.assertLess(bw * bh, 600, "Detected target area exceeded human threshold")
+
+    def test_14_physical_landmark_flood_depth_engine(self):
+        import numpy as np
+        from app.core.triage_engine import triage_engine_instance
+
+        dummy_img = np.zeros((480, 640, 3), dtype=np.uint8)
+
+        # Test Case A: Ground level dry
+        depth_dry, ref_dry = triage_engine_instance.compute_landmark_flood_depth(dummy_img, flood_pct=0.0)
+        self.assertEqual(depth_dry, 0.0)
+        self.assertIn("GROUND", ref_dry)
+
+        # Test Case B: Shallow street flooding (e.g. 20% flood pct)
+        depth_shallow, ref_shallow = triage_engine_instance.compute_landmark_flood_depth(dummy_img, flood_pct=20.0)
+        self.assertGreater(depth_shallow, 0.0)
+        self.assertLessEqual(depth_shallow, 1.2)
+        self.assertIn("GROUND", ref_shallow)
+
+        # Test Case C: Light pole encroachment (e.g. 55% flood pct)
+        depth_pole, ref_pole = triage_engine_instance.compute_landmark_flood_depth(dummy_img, flood_pct=55.0)
+        self.assertGreater(depth_pole, 1.2)
+        self.assertLessEqual(depth_pole, 3.5)
+        self.assertIn("LIGHT_POLES", ref_pole)
+
+        # Test Case D: First-floor building marker exceeded (e.g. 85% flood pct)
+        depth_roof, ref_roof = triage_engine_instance.compute_landmark_flood_depth(dummy_img, flood_pct=85.0)
+        self.assertGreaterEqual(depth_roof, 3.5)
+        self.assertIn("FIRST_FLOOR_BUILDING_MARKER", ref_roof)
+
+    def test_15_autonomous_patrol_stream_step(self):
+        from app.core.triage_engine import triage_engine_instance
+
+        # Test patrol steps 0 to 3
+        sectors_seen = []
+        for step in range(4):
+            res = triage_engine_instance.process_patrol_step(step)
+            self.assertTrue(res["patrol_active"])
+            self.assertEqual(res["patrol_step"], step)
+            self.assertEqual(res["drone_callsign"], "SCOUT-ALPHA (DRONE-01)")
+            self.assertIn("Sector", res["current_sector"])
+            self.assertTrue("flood_depth_meters" in res)
+            self.assertTrue("landmark_reference" in res)
+            self.assertTrue(len(res["rgb_preview_url"]) > 100)
+            self.assertTrue(len(res["thermal_preview_url"]) > 100)
+            sectors_seen.append(res["current_sector"])
+
+        self.assertEqual(len(set(sectors_seen)), 4, "Patrol steps did not traverse 4 distinct sectors")
+
+    def test_16_government_id_auth_flow(self):
+        from app.core.auth_engine import register_user, verify_otp, login_user
+        from app.models.auth import RegisterRequest, OTPVerifyRequest, LoginRequest
+
+        # 1. Reject invalid Gov ID
+        bad_req = RegisterRequest(
+            full_name="Impostor", email="bad@fake.com", department="None",
+            gov_id="FAKE-999", password="Password@123", role="command_center"
+        )
+        res_bad = register_user(bad_req)
+        self.assertFalse(res_bad["success"])
+        self.assertIn("not in the authorized personnel registry", res_bad["error"])
+
+        # 2. Register valid Gov ID
+        good_req = RegisterRequest(
+            full_name="Officer Jane Doe", email="j.doe@eoc.gov", department="Command Ops",
+            gov_id="GOV-DM-010", password="SecurePassword@123", role="command_center"
+        )
+        res_good = register_user(good_req)
+        self.assertTrue(res_good["success"])
+        self.assertIn("otp_code", res_good)
+        otp = res_good["otp_code"]
+
+        # 3. Reject wrong OTP
+        verify_bad = verify_otp(OTPVerifyRequest(gov_id="GOV-DM-010", otp_code="000000"))
+        self.assertFalse(verify_bad["success"])
+
+        # 4. Verify correct OTP
+        verify_good = verify_otp(OTPVerifyRequest(gov_id="GOV-DM-010", otp_code=otp))
+        self.assertTrue(verify_good["success"])
+
+        # 5. Login with verified account
+        login_res = login_user(LoginRequest(gov_id="GOV-DM-010", password="SecurePassword@123"))
+        self.assertTrue(login_res["success"])
+        self.assertEqual(login_res["role"], "command_center")
+        self.assertTrue(len(login_res["token"]) > 10)
+
+        # 6. Verify pre-seeded demo accounts (Command Center and Field Rescue)
+        cmd_login = login_user(LoginRequest(gov_id="GOV-DM-001", password="Demo@1234"))
+        self.assertTrue(cmd_login["success"])
+        self.assertEqual(cmd_login["role"], "command_center")
+
+        fr_login = login_user(LoginRequest(gov_id="FR-001", password="Field@1234"))
+        self.assertTrue(fr_login["success"])
+        self.assertEqual(fr_login["role"], "field_rescue")
+
+    def test_17_patrol_autonomous_and_manual_dispatch(self):
+        # Test autonomous dispatch logging to mission history
+        initial_history_len = len(store.mission_history)
+
+        # Sector 1 has flood >= 1.5m and victims > 0 -> should dispatch rescue boat
+        from app.core.triage_engine import triage_engine_instance
+        res0 = triage_engine_instance.process_patrol_step(0)
+        self.assertGreaterEqual(res0["flood_depth_meters"], 1.5)
+        self.assertGreater(res0["confirmed_people_count"], 0)
+
+        # Simulate autonomous dispatch call
+        from datetime import datetime, timezone
+        auto_record = {
+            "id": f"MH-{len(store.mission_history) + 1:04d}",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "sector": res0["current_sector"],
+            "waypoint_coords": res0["waypoint_coords"],
+            "mode": "auto",
+            "dispatched_asset": "Rescue Boat + SCOUT-ALPHA",
+            "action": "DISPATCH_RESCUE_BOAT",
+            "payload_kg": 0.0,
+            "flood_depth_m": res0["flood_depth_meters"],
+            "victims_count": res0["confirmed_people_count"],
+            "status": "dispatched",
+            "drone_callsign": res0["drone_callsign"]
+        }
+        store.mission_history.insert(0, auto_record)
+        self.assertEqual(len(store.mission_history), initial_history_len + 1)
+        self.assertEqual(store.mission_history[0]["mode"], "auto")
+        self.assertEqual(store.mission_history[0]["action"], "DISPATCH_RESCUE_BOAT")
+
+    def test_18_four_shelters_setup(self):
+        # Verify 4 shelters: Alpha, Bravo, Charlie, Delta
+        self.assertEqual(len(store.shelters), 4)
+        shelter_ids = list(store.shelters.keys())
+        self.assertIn("SHELTER-01", shelter_ids)
+        self.assertIn("SHELTER-02", shelter_ids)
+        self.assertIn("HOSPITAL-01", shelter_ids)
+        self.assertIn("SHELTER-04", shelter_ids)
+
+        s_alpha = store.shelters["SHELTER-01"]
+        self.assertEqual(s_alpha.name, "North Haven Community School")
+        self.assertEqual(s_alpha.capacity, 350)
+
+        s_bravo = store.shelters["SHELTER-02"]
+        self.assertEqual(s_bravo.name, "Saint Jude Coastal Chapel")
+
+        s_charlie = store.shelters["HOSPITAL-01"]
+        self.assertEqual(s_charlie.name, "Harborview Regional Hospital")
+
+        s_delta = store.shelters["SHELTER-04"]
+        self.assertEqual(s_delta.name, "East Ridge Community Hall")
+        self.assertEqual(s_delta.elevation_meters, 9.5)
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,0 +1,5 @@
+# RESQFLY Drone Aerial Object Detector (VisDrone Fine-Tuned)
+- Base Architecture: YOLO11n
+- Trained Weights: resqfly_aerial_best.pt
+- Classes: 0: pedestrian, 1: people
+- Inference Recommender: Sliced Aided Hyper Inference (SAHI) with 512x512 windows
