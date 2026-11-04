@@ -70,12 +70,30 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# Configure Production CORS for Vercel Frontend, Render Cloud, and Local Development
+ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "http://localhost:8000",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:8000",
+    "https://resqfly.vercel.app",
+    "https://resqfly.onrender.com",
+]
+
+# Allow all Vercel deployments (*.vercel.app), Render cloud hosts, and local network ports
+CORS_ORIGIN_REGEX = r"https://.*\.vercel\.app|https://.*\.onrender\.com|http://localhost:.*|http://127\.0\.0\.1:.*"
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=CORS_ORIGIN_REGEX,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"],
     allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=86400,
 )
 
 # Mount REST API Routers

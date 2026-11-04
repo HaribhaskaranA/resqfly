@@ -1,8 +1,18 @@
 /**
  * RESQFLY API & WebSocket Telemetry Client
+ * Configured for Production (Vercel Frontend <-> Live Render Cloud Backend) & Local Development
  */
 
-const API_BASE = '/api';
+function sanitizeUrl(url) {
+  if (!url) return '';
+  return url.trim().replace(/^\[|\]$/g, '').replace(/\/+$/, '');
+}
+
+export const API_BASE_URL = sanitizeUrl(import.meta.env.VITE_API_URL) || 'https://resqfly.onrender.com';
+const CLEAN_API_URL = API_BASE_URL.replace(/\/+$/, '');
+const API_BASE = CLEAN_API_URL.endsWith('/api') ? CLEAN_API_URL : `${CLEAN_API_URL}/api`;
+
+export const WS_BASE_URL = sanitizeUrl(import.meta.env.VITE_WS_URL) || 'wss://resqfly.onrender.com';
 
 export async function fetchHealth() {
   const res = await fetch(`${API_BASE}/health`);
@@ -261,8 +271,14 @@ class TelemetrySocket {
   }
 
   connect() {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws/telemetry`;
+    let wsUrl;
+    if (WS_BASE_URL) {
+      const cleanWs = WS_BASE_URL.replace(/\/ws\/telemetry\/?$/, '').replace(/\/+$/, '');
+      wsUrl = `${cleanWs}/ws/telemetry`;
+    } else {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      wsUrl = `${protocol}//${window.location.host}/ws/telemetry`;
+    }
 
     try {
       this.ws = new WebSocket(wsUrl);
