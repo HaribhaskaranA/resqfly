@@ -7,9 +7,10 @@ import cv2
 import numpy as np
 
 # Operational Thresholds
-CONFIDENCE_THRESHOLD = 0.65
-IOU_THRESHOLD = 0.35
-HUMAN_CLASSES = {"person", "pedestrian", "people"}
+CONFIDENCE_THRESHOLD = 0.70
+IOU_THRESHOLD = 0.25
+HUMAN_CLASSES = {"person"}
+MAX_DETECTIONS = 15
 
 
 def apply_aggressive_nms(
@@ -222,16 +223,18 @@ def apply_strict_aerial_filters(
     water_mask: Optional[np.ndarray] = None,
     building_footprints: Optional[List[List[int]]] = None,
     min_conf: float = CONFIDENCE_THRESHOLD,
-    max_iou: float = IOU_THRESHOLD
+    max_iou: float = IOU_THRESHOLD,
+    max_det: int = MAX_DETECTIONS
 ) -> Tuple[List[List[int]], List[float]]:
     """
     Orchestrates end-to-end post-processing pipeline:
-    1. Rejects confidence < 0.65
-    2. Aggressive NMS (IoU 0.35)
+    1. Rejects confidence < 0.70
+    2. Aggressive NMS (IoU 0.25)
     3. Geometric Plausibility & Altitude Aspect Ratio
     4. Local Contrast Thermal Rejection (kills hot roofs)
     5. Building Footprint Rejection
     6. Water Specular Glint & Ripple Rejection
+    7. Caps maximum detections to max_det (default 15)
     """
     if not boxes:
         return [], []
@@ -280,4 +283,4 @@ def apply_strict_aerial_filters(
         final_boxes.append(b)
         final_confs.append(c)
 
-    return final_boxes, final_confs
+    return final_boxes[:max_det], final_confs[:max_det]

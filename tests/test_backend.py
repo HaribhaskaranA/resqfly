@@ -424,7 +424,7 @@ class TestResqflyCore(unittest.TestCase):
         self.assertEqual(s_delta.elevation_meters, 9.5)
 
     def test_19_strict_aerial_filtering_thresholds_and_nms(self):
-        """Verify baseline confidence (0.65), NMS IoU (0.35), and physical drone scale."""
+        """Verify baseline confidence (0.70), NMS IoU (0.25), and physical drone scale."""
         from app.core.thermal_filter import (
             CONFIDENCE_THRESHOLD,
             IOU_THRESHOLD,
@@ -433,8 +433,8 @@ class TestResqflyCore(unittest.TestCase):
             apply_strict_aerial_filters
         )
 
-        self.assertEqual(CONFIDENCE_THRESHOLD, 0.65)
-        self.assertEqual(IOU_THRESHOLD, 0.35)
+        self.assertEqual(CONFIDENCE_THRESHOLD, 0.70)
+        self.assertEqual(IOU_THRESHOLD, 0.25)
 
         img_w, img_h = 640, 512
 
@@ -453,19 +453,19 @@ class TestResqflyCore(unittest.TestCase):
         # 5. Plausible aerial human target
         self.assertTrue(is_geometrically_plausible(100, 100, 116, 134, img_w, img_h)) # w=16, h=34 -> area 544, aspect 0.47
 
-        # 6. Aggressive NMS collapsing duplicate/stacked boxes (IoU > 0.35)
+        # 6. Aggressive NMS collapsing duplicate/stacked boxes (IoU > 0.25)
         box1 = [100, 100, 120, 140]
         box2 = [102, 101, 122, 141] # High overlap > 85% IoU
         box3 = [250, 250, 270, 290] # Distinct target
-        nms_idx = apply_aggressive_nms([box1, box2, box3], [0.88, 0.72, 0.91], conf_thresh=0.65, iou_thresh=0.35)
+        nms_idx = apply_aggressive_nms([box1, box2, box3], [0.88, 0.72, 0.91], conf_thresh=0.70, iou_thresh=0.25)
         self.assertEqual(len(nms_idx), 2, "Aggressive NMS failed to collapse stacked duplicate boxes")
 
-        # 7. Low-confidence rejection (< 0.65)
+        # 7. Low-confidence rejection (< 0.70)
         f_boxes, f_confs = apply_strict_aerial_filters(
             boxes=[box1, box3],
             confs=[0.45, 0.89], # 0.45 must be rejected
             image_shape=(img_h, img_w),
-            min_conf=0.65
+            min_conf=0.70
         )
         self.assertEqual(len(f_boxes), 1)
         self.assertEqual(f_boxes[0], box3)
@@ -528,6 +528,26 @@ class TestResqflyCore(unittest.TestCase):
             filter_water_specular_reflections(ripple_box, rgb_flood, thermal_img=th_cold_water, water_mask=water_mask),
             "Water specular ripple glint was not suppressed"
         )
+
+    def test_21_ground_truth_class_0_yolo_and_no_synthetic_leakage(self):
+        """Verify strict class 0 YOLO inference, max_det cap, and zero synthetic leakage on empty frames."""
+        import cv2
+        import numpy as np
+        from app.core.detection_engine import detection_engine_instance
+
+        # 1. Method exists and enforces contract
+        self.assertTrue(hasattr(detection_engine_instance, "predict_yolo_people"))
+
+        # 2. Test empty water frame (RGB)
+        empty_water = np.zeros((480, 640, 3), dtype=np.uint8)
+        empty_water[:] = [50, 70, 90] # Plain mud flood water
+        _, buf = cv2.imencode('.jpg', empty_water)
+        obs = detection_engine_instance.detect_people_in_image(buf.tobytes())
+
+        # Ground truth: 0 victims, must NOT leak synthetic 4-victim mock frame
+        self.assertEqual(obs.detected_count, 0, f"False positive victims leaked on empty frame: {obs.detected_count}")
+        self.assertEqual(len(obs.bounding_boxes), 0)
+        self.assertIn("Sector clear", obs.notes)
 
 if __name__ == "__main__":
     unittest.main()

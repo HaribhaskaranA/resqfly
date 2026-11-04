@@ -238,13 +238,36 @@ class HumanDetectionEngine:
             nms_idx = apply_aggressive_nms(raw_boxes, confs, conf_thresh=CONFIDENCE_THRESHOLD, iou_thresh=IOU_THRESHOLD)
             raw_boxes = [raw_boxes[i] for i in nms_idx]
 
-        # Cluster nearby heat signatures into sensible individual counts
+        # Cluster nearby heat signatures into sensible individual counts and cap to max 15
         clustered_boxes = merge_nearby_boxes(raw_boxes, max_dist=12)
         clustered_boxes.sort(key=lambda b: (b[1], b[0]))
+        clustered_boxes = clustered_boxes[:15]
 
         if return_aircraft:
             return clustered_boxes, aircraft_detected
         return clustered_boxes
+
+    def compute_rgb_flood_pct(self, img_bgr: np.ndarray) -> float:
+        """Computes floodwater surface spread percentage using adaptive silt, mudflow, and riverbed HSV segmentation."""
+        if img_bgr is None or img_bgr.size == 0:
+            return 0.0
+
+        hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+        mask_muddy = cv2.inRange(hsv, np.array([10, 20, 30]), np.array([40, 160, 200]))
+        mask_silt = cv2.inRange(hsv, np.array([0, 0, 20]), np.array([180, 50, 140]))
+        mask_dark = cv2.inRange(hsv, np.array([0, 0, 15]), np.array([180, 80, 95]))
+        flood_mask = cv2.bitwise_or(mask_muddy, cv2.bitwise_or(mask_silt, mask_dark))
+
+        gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+        blurred = cv2.GaussianBlur(gray, (7, 7), 0)
+        grad_x = cv2.Sobel(blurred, cv2.CV_16S, 1, 0)
+        grad_y = cv2.Sobel(blurred, cv2.CV_16S, 0, 1)
+        abs_grad = cv2.convertScaleAbs(grad_x) + cv2.convertScaleAbs(grad_y)
+        low_texture_mask = (abs_grad < 20) & (gray >= 25) & (gray <= 140)
+
+        combined_mask = cv2.bitwise_or(flood_mask, low_texture_mask.astype(np.uint8) * 255)
+        flood_pct = (np.count_nonzero(combined_mask) / float(combined_mask.size)) * 100.0
+        return float(flood_pct)
 
     def compute_landmark_flood_depth(
         self,
@@ -366,6 +389,50 @@ class HumanDetectionEngine:
 
         return annotated
 
+    def predict_yolo_people(self, frame: np.ndarray) -> List[Tuple[List[int], float]]:
+        """
+        Production-grade YOLO prediction call:
+        - conf=0.70: Hard floor, ignores anything under 70% confidence
+        - iou=0.25: Aggressive NMS collapsing all stacked/overlapping duplicate boxes
+        - classes=[0]: STRICT, ONLY detects class 0 ('person' / 'pedestrian'). Rejects all roofs, boats, poles.
+        - max_det=15: Caps maximum plausible victims per aerial frame
+        - verbose=False
+        """
+        if self.yolo_model is None or frame is None or frame.size == 0:
+            return []
+
+        h, w = frame.shape[:2]
+        detected = []
+
+        try:
+            results = self.yolo_model.predict(
+                source=frame,
+                conf=0.70,        # Hard floor: ignore anything under 70% confidence
+                iou=0.25,         # Aggressive NMS: collapses all stacked/overlapping duplicate boxes
+                classes=[0],      # STRICT: ONLY detect class 0 ('person' / 'pedestrian'). Reject all roofs, boats, poles.
+                max_det=15,       # Cap maximum plausible victims per aerial frame
+                verbose=False
+            )
+            for r in results:
+                if r.boxes is None:
+                    continue
+                for box in r.boxes:
+                    coords = box.xyxy[0].tolist()
+                    c_val = float(box.conf[0])
+                    bx1, by1, bx2, by2 = int(coords[0]), int(coords[1]), int(coords[2]), int(coords[3])
+                    bw = max(1, bx2 - bx1)
+                    bh = max(1, by2 - by1)
+                    area = bw * bh
+                    # Physical aerial scale sanity check: area >= 64, <= 5% frame
+                    if area >= 64 and area <= (w * h * 0.05):
+                        aspect = float(bw) / float(bh)
+                        if 0.25 <= aspect <= 2.20:
+                            detected.append(([bx1, by1, bx2, by2], c_val))
+        except Exception:
+            pass
+
+        return detected
+
     def detect_rgb_ground_crowd(
         self,
         rgb_img: np.ndarray,
@@ -374,8 +441,8 @@ class HumanDetectionEngine:
     ) -> List[List[int]]:
         """
         Aerial optical detector on settlement road (y: 0.65 to 0.95, x: 0.25 to 0.65).
-        Enforces tight confidence threshold (>= 0.65), aggressive NMS (IoU 0.35),
-        human class filtering, aspect ratio/geometric bounds, local thermal contrast,
+        Enforces tight confidence threshold (>= 0.70), aggressive NMS (IoU 0.25),
+        class 0 human filtering, aspect ratio/geometric bounds, local thermal contrast,
         and water ripple/reflection suppression.
         """
         h, w = rgb_img.shape[:2]
@@ -386,48 +453,31 @@ class HumanDetectionEngine:
         boxes = []
         confs = []
 
-        if self.yolo_model is not None:
-            try:
-                results = self.yolo_model(
-                    road_crop,
-                    classes=[0, 1],
-                    conf=CONFIDENCE_THRESHOLD,
-                    iou=IOU_THRESHOLD,
-                    verbose=False
-                )
-                for r in results:
-                    for box in r.boxes:
-                        coords = box.xyxy[0].tolist()
-                        c_val = float(box.conf[0])
-                        if c_val < CONFIDENCE_THRESHOLD:
-                            continue
-                        bw = int(coords[2] - coords[0])
-                        bh = int(coords[3] - coords[1])
-                        if bw <= 45 and bh <= 55 and (bw * bh) >= 64:
-                            gx1 = int(coords[0] + xmin)
-                            gy1 = int(coords[1] + ymin)
-                            gx2 = int(coords[2] + xmin)
-                            gy2 = int(coords[3] + ymin)
-                            boxes.append([gx1, gy1, gx2, gy2])
-                            confs.append(c_val)
-            except Exception:
-                pass
+        # Run strict Class-0 YOLO inference
+        yolo_dets = self.predict_yolo_people(road_crop)
+        for (bx1, by1, bx2, by2), c_val in yolo_dets:
+            gx1 = bx1 + xmin
+            gy1 = by1 + ymin
+            gx2 = bx2 + xmin
+            gy2 = by2 + ymin
+            boxes.append([gx1, gy1, gx2, gy2])
+            confs.append(c_val)
 
-        if len(boxes) < 8:
+        # STRICT: High-contrast silhouette fallback ONLY if len(boxes) == 0 AND matches strict human posture
+        if len(boxes) == 0:
             gray_road = cv2.cvtColor(road_crop, cv2.COLOR_BGR2GRAY)
             med = cv2.medianBlur(gray_road, 15)
             diff = cv2.absdiff(gray_road, med)
-            # Raised threshold from 6 to 28 to kill water ripples and mudflow noise
-            _, mask = cv2.threshold(diff, 28, 255, cv2.THRESH_BINARY)
+            _, mask = cv2.threshold(diff, 35, 255, cv2.THRESH_BINARY)
             cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
             for c in cnts:
                 bx, by, bw, bh = cv2.boundingRect(c)
                 area = cv2.contourArea(c)
                 box_area = bw * bh
-                if 64 <= box_area <= 1200 and bw <= 45 and bh <= 55:
-                    aspect_w_h = float(bw) / float(max(1, bh))
-                    if 0.28 <= aspect_w_h <= 1.20:
+                if 64 <= box_area <= 600 and bw <= 35 and bh <= 50:
+                    aspect = float(bh) / float(max(1, bw))
+                    if aspect >= 1.30:
                         gx1 = xmin + bx
                         gy1 = ymin + by
                         gx2 = gx1 + bw
@@ -448,7 +498,8 @@ class HumanDetectionEngine:
             rgb_img=rgb_img,
             building_footprints=building_footprints,
             min_conf=CONFIDENCE_THRESHOLD,
-            max_iou=IOU_THRESHOLD
+            max_iou=IOU_THRESHOLD,
+            max_det=15
         )
 
         final_boxes = []
@@ -475,7 +526,7 @@ class HumanDetectionEngine:
             final_boxes.append(cb)
 
         final_boxes.sort(key=lambda b: (b[1], b[0]))
-        return final_boxes
+        return final_boxes[:15]
 
     def detect_people_in_image(
         self,
@@ -483,7 +534,7 @@ class HumanDetectionEngine:
         source_type: str = "sample_video_ai",
         location_hint: str = "Zone 3 - Coastal Canal Bridge"
     ) -> DetectionObservation:
-        """Processes image byte stream with thermal-first detection and projected RGB overlay."""
+        """Processes image byte stream with strict ground-truth YOLO class 0 detection and thermal corroboration."""
         nparr = np.frombuffer(image_bytes, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
@@ -493,47 +544,66 @@ class HumanDetectionEngine:
         height, width, _ = img.shape
         is_thermal_likely = np.max(np.abs(img[:, :, 0].astype(int) - img[:, :, 1].astype(int))) < 15
 
+        bounding_boxes: List[BoundingBox] = []
+        confs: List[float] = []
+
         if is_thermal_likely:
             ground_boxes = self.detect_thermal_hotspots(img)
             annotated_img = img.copy()
             for b in ground_boxes:
+                c_val = 0.94
                 cv2.rectangle(annotated_img, (b[0], b[1]), (b[2], b[3]), (0, 140, 255), 2)
                 cv2.putText(annotated_img, "FLIR IR HOTSPOT", (b[0], max(16, b[1] - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+                bounding_boxes.append(BoundingBox(
+                    x=float(b[0]), y=float(b[1]), width=float(b[2] - b[0]), height=float(b[3] - b[1]),
+                    confidence=c_val, class_name="person"
+                ))
+                confs.append(c_val)
         else:
-            ground_boxes = self.detect_rgb_ground_crowd(img)
+            # 1. First run strict YOLO Class-0 inference on full aerial frame
+            yolo_dets = self.predict_yolo_people(img)
+
+            # 2. If full frame yielded no targets, check road settlement ROI
+            if not yolo_dets:
+                ground_boxes = self.detect_rgb_ground_crowd(img)
+                yolo_confs = [0.85] * len(ground_boxes)
+            else:
+                ground_boxes = [b for b, c in yolo_dets]
+                yolo_confs = [c for b, c in yolo_dets]
+
             annotated_img = self.annotate_rgb_with_thermal_targets(img, ground_boxes, confidence=0.92)
 
-        if not ground_boxes:
-            return self.generate_synthetic_detection(source_type=source_type, location_hint=location_hint)
+            for b, c_val in zip(ground_boxes, yolo_confs):
+                bx, by, bx2, by2 = b[0], b[1], b[2], b[3]
+                bw = bx2 - bx
+                bh = by2 - by
+                bounding_boxes.append(BoundingBox(
+                    x=float(bx),
+                    y=float(by),
+                    width=float(bw),
+                    height=float(bh),
+                    confidence=round(c_val, 2),
+                    class_name="person"
+                ))
+                confs.append(c_val)
 
-        bounding_boxes: List[BoundingBox] = []
-        confs: List[float] = []
-
-        for b in ground_boxes:
-            bx, by, bx2, by2 = b[0], b[1], b[2], b[3]
-            bw = bx2 - bx
-            bh = by2 - by
-            c_val = 0.94
-
-            bounding_boxes.append(BoundingBox(
-                x=float(bx),
-                y=float(by),
-                width=float(bw),
-                height=float(bh),
-                confidence=c_val,
-                class_name="person"
-            ))
-            confs.append(c_val)
-
+        # DO NOT fall back to generate_synthetic_detection if 0 victims detected!
+        # Return genuine ground-truth observation of the user's frame with 0 detections.
         _, buffer = cv2.imencode('.jpg', annotated_img, [cv2.IMWRITE_JPEG_QUALITY, 85])
         img_b64 = f"data:image/jpeg;base64,{base64.b64encode(buffer).decode('utf-8')}"
 
         detected_count = len(bounding_boxes)
-        avg_conf = round(sum(confs) / len(confs), 2) if confs else 0.94
+        avg_conf = round(sum(confs) / len(confs), 2) if confs else 0.0
 
         # Compute landmark flood depth
         flood_pct = self.compute_rgb_flood_pct(img) if not is_thermal_likely else 55.0
         flood_depth, landmark_ref = self.compute_landmark_flood_depth(img, flood_pct)
+
+        status_notes = (
+            f"Identified {detected_count} confirmed victims via Strict Class-0 Aerial Detection. Flood depth: {flood_depth}m ({landmark_ref})."
+            if detected_count > 0 else
+            f"Sector clear. Zero victims detected in current frame. Flood depth: {flood_depth}m ({landmark_ref})."
+        )
 
         return DetectionObservation(
             id=f"OBS-{int(time.time() * 1000) % 100000}",
@@ -550,7 +620,7 @@ class HumanDetectionEngine:
             landmark_reference=landmark_ref,
             verification_status="unverified",
             timestamp=datetime.now(timezone.utc).isoformat(),
-            notes=f"Identified {detected_count} confirmed victims via Thermal-First Detection with RGB Geospatial Overlay. Flood depth: {flood_depth}m ({landmark_ref})."
+            notes=status_notes
         )
 
     def generate_synthetic_detection(

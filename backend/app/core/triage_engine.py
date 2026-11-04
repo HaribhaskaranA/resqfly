@@ -290,9 +290,10 @@ class MultiModalTriageEngine:
             nms_idx = apply_aggressive_nms(raw_boxes, confs, conf_thresh=CONFIDENCE_THRESHOLD, iou_thresh=IOU_THRESHOLD)
             raw_boxes = [raw_boxes[i] for i in nms_idx]
 
-        # Cluster nearby heat signatures on the ground/road into sensible individual counts
+        # Cluster nearby heat signatures on the ground/road into sensible individual counts and cap to max 15
         clustered_boxes = merge_nearby_boxes(raw_boxes, max_dist=12)
         clustered_boxes.sort(key=lambda b: (b[1], b[0]))
+        clustered_boxes = clustered_boxes[:15]
         self.last_aircraft_detected = aircraft_detected
 
         if return_aircraft:
@@ -307,8 +308,8 @@ class MultiModalTriageEngine:
     ) -> List[List[int]]:
         """
         Executes dedicated VisDrone aerial ROI scan on the settlement road (y: 0.65 to 0.95, x: 0.25 to 0.65).
-        Enforces tight confidence threshold (>= 0.65), aggressive NMS (IoU 0.35),
-        human class filtering, aspect ratio/geometric bounds, local thermal contrast,
+        Enforces tight confidence threshold (>= 0.70), aggressive NMS (IoU 0.25),
+        human class 0 filtering, aspect ratio/geometric bounds, local thermal contrast,
         and water ripple/reflection suppression.
         """
         if rgb_img is None or rgb_img.size == 0:
@@ -322,22 +323,23 @@ class MultiModalTriageEngine:
         boxes = []
         confs = []
 
-        # Stream 1: YOLO aerial model (classes 0: pedestrian, 1: people)
+        # Stream 1: Strict Class-0 YOLO aerial model
         if self.yolo_model is not None:
             try:
-                results = self.yolo_model(
-                    road_crop,
-                    classes=[0, 1],
-                    conf=CONFIDENCE_THRESHOLD,
-                    iou=IOU_THRESHOLD,
+                results = self.yolo_model.predict(
+                    source=road_crop,
+                    conf=0.70,        # Hard floor: ignore anything under 70% confidence
+                    iou=0.25,         # Aggressive NMS: collapses all stacked/overlapping duplicate boxes
+                    classes=[0],      # STRICT: ONLY detect class 0 ('person' / 'pedestrian'). Reject all roofs, boats, poles.
+                    max_det=15,       # Cap maximum plausible victims per aerial frame
                     verbose=False
                 )
                 for r in results:
+                    if r.boxes is None:
+                        continue
                     for box in r.boxes:
                         coords = box.xyxy[0].tolist()
                         c_val = float(box.conf[0])
-                        if c_val < CONFIDENCE_THRESHOLD:
-                            continue
                         bw = int(coords[2] - coords[0])
                         bh = int(coords[3] - coords[1])
                         if bw <= 45 and bh <= 55 and (bw * bh) >= 64:
@@ -350,22 +352,21 @@ class MultiModalTriageEngine:
             except Exception:
                 pass
 
-        # Stream 2: High-contrast aerial silhouette inspection on road crop
-        if len(boxes) < 8:
+        # Stream 2: High-contrast aerial silhouette inspection ONLY if len(boxes) == 0
+        if len(boxes) == 0:
             gray_road = cv2.cvtColor(road_crop, cv2.COLOR_BGR2GRAY)
             med = cv2.medianBlur(gray_road, 15)
             diff = cv2.absdiff(gray_road, med)
-            # Raised threshold from 6 to 28 to kill water ripples and mudflow noise
-            _, mask = cv2.threshold(diff, 28, 255, cv2.THRESH_BINARY)
+            _, mask = cv2.threshold(diff, 35, 255, cv2.THRESH_BINARY)
             cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
             for c in cnts:
                 bx, by, bw, bh = cv2.boundingRect(c)
                 area = cv2.contourArea(c)
                 box_area = bw * bh
-                if 64 <= box_area <= 1200 and bw <= 45 and bh <= 55:
-                    aspect_w_h = float(bw) / float(max(1, bh))
-                    if 0.28 <= aspect_w_h <= 1.20:
+                if 64 <= box_area <= 600 and bw <= 35 and bh <= 50:
+                    aspect = float(bh) / float(max(1, bw))
+                    if aspect >= 1.30:
                         gx1 = xmin + bx
                         gy1 = ymin + by
                         gx2 = gx1 + bw
@@ -386,7 +387,8 @@ class MultiModalTriageEngine:
             rgb_img=rgb_img,
             building_footprints=building_footprints,
             min_conf=CONFIDENCE_THRESHOLD,
-            max_iou=IOU_THRESHOLD
+            max_iou=IOU_THRESHOLD,
+            max_det=15
         )
 
         final_boxes = []
@@ -416,7 +418,7 @@ class MultiModalTriageEngine:
             final_boxes.append(cb)
 
         final_boxes.sort(key=lambda b: (b[1], b[0]))
-        return final_boxes
+        return final_boxes[:15]
 
     def project_thermal_to_rgb(
         self,
