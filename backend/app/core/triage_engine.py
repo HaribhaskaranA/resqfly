@@ -17,6 +17,17 @@ from typing import Dict, Any, List, Tuple, Optional
 import cv2
 import numpy as np
 
+from app.core.thermal_filter import (
+    CONFIDENCE_THRESHOLD,
+    IOU_THRESHOLD,
+    apply_aggressive_nms,
+    is_geometrically_plausible,
+    filter_local_thermal_contrast,
+    filter_water_specular_reflections,
+    apply_strict_aerial_filters,
+    is_inside_building_footprint,
+)
+
 def merge_nearby_boxes(boxes: List[List[int]], max_dist: int = 14) -> List[List[int]]:
     """Clusters and merges nearby fragmented human bounding boxes into cohesive individual/group boxes."""
     if not boxes:
@@ -181,7 +192,8 @@ class MultiModalTriageEngine:
     def detect_thermal_hotspots(
         self,
         thermal_img: np.ndarray,
-        return_aircraft: bool = False
+        return_aircraft: bool = False,
+        building_footprints: Optional[List[List[int]]] = None
     ) -> Any:
         """
         Hard Aircraft / Large Vehicle Rejection & Strict Human Aspect Ratio Filtering:
@@ -191,6 +203,7 @@ class MultiModalTriageEngine:
         3. Turbine Core Saturation: Drops pure white saturated turbine exhaust (pixel intensity > 245).
         4. Flight Path Filter: Suppresses heat signatures centered between 30% and 60% vertical frame over open river.
         5. Building Wall Filter: Strips false positives on the right-hand wall (x > 0.68, y < 0.65).
+        6. Local 10px boundary ring contrast check (kills hot rooftops) and aggressive NMS.
         """
         if thermal_img is None or thermal_img.size == 0:
             self.last_aircraft_detected = False
@@ -228,8 +241,9 @@ class MultiModalTriageEngine:
                     aircraft_detected = True
                     continue
 
-            # Lower area threshold
-            if area < 4:
+            # Area lower and upper bounds & aerial scale:
+            box_area = bw * bh
+            if area < 4 or box_area > (w * h * 0.05):
                 continue
 
             # Rule 3: Strict Human Aspect Ratio & Max Area constraint:
@@ -255,7 +269,26 @@ class MultiModalTriageEngine:
             if yc < 0.20:
                 continue
 
-            raw_boxes.append([x, y, x + bw, y + bh])
+            # Rule 6: Local Contrast Thermal Rejection (Kill Hot Rooftops & Solar Gain)
+            # Sample 10px boundary ring surrounding the bounding box.
+            # If mean(interior) - mean(surroundings) < 3.5°C, DISCARD.
+            candidate_box = [x, y, x + bw, y + bh]
+            if not filter_local_thermal_contrast(
+                candidate_box,
+                thermal_img,
+                min_contrast_celsius=3.5,
+                ring_thickness=10,
+                building_footprints=building_footprints
+            ):
+                continue
+
+            raw_boxes.append(candidate_box)
+
+        # Apply aggressive NMS (IoU 0.35, Conf 0.65) to collapse duplicate/stacked candidate boxes
+        if raw_boxes:
+            confs = [0.94] * len(raw_boxes)
+            nms_idx = apply_aggressive_nms(raw_boxes, confs, conf_thresh=CONFIDENCE_THRESHOLD, iou_thresh=IOU_THRESHOLD)
+            raw_boxes = [raw_boxes[i] for i in nms_idx]
 
         # Cluster nearby heat signatures on the ground/road into sensible individual counts
         clustered_boxes = merge_nearby_boxes(raw_boxes, max_dist=12)
@@ -269,15 +302,14 @@ class MultiModalTriageEngine:
     def detect_rgb_people(
         self,
         rgb_img: np.ndarray,
-        thermal_img: Optional[np.ndarray] = None
+        thermal_img: Optional[np.ndarray] = None,
+        building_footprints: Optional[List[List[int]]] = None
     ) -> List[List[int]]:
         """
         Executes dedicated VisDrone aerial ROI scan on the settlement road (y: 0.65 to 0.95, x: 0.25 to 0.65).
-        Applies:
-        - Fine-tuned aerial model resqfly_aerial_best.pt (conf=0.20, iou=0.40)
-        - Aspect Ratio Filter: Discards perfect squares or purely horizontal boxes without thermal backing (height < 1.1 * width)
-        - Discards static rectangular street/road signs lacking human thermal IR signatures
-        - Discards right-hand building wall artifacts
+        Enforces tight confidence threshold (>= 0.65), aggressive NMS (IoU 0.35),
+        human class filtering, aspect ratio/geometric bounds, local thermal contrast,
+        and water ripple/reflection suppression.
         """
         if rgb_img is None or rgb_img.size == 0:
             return []
@@ -293,22 +325,27 @@ class MultiModalTriageEngine:
         # Stream 1: YOLO aerial model (classes 0: pedestrian, 1: people)
         if self.yolo_model is not None:
             try:
-                results = self.yolo_model(road_crop, classes=[0, 1], conf=0.20, iou=0.40, verbose=False)
+                results = self.yolo_model(
+                    road_crop,
+                    classes=[0, 1],
+                    conf=CONFIDENCE_THRESHOLD,
+                    iou=IOU_THRESHOLD,
+                    verbose=False
+                )
                 for r in results:
                     for box in r.boxes:
                         coords = box.xyxy[0].tolist()
                         c_val = float(box.conf[0])
+                        if c_val < CONFIDENCE_THRESHOLD:
+                            continue
                         bw = int(coords[2] - coords[0])
                         bh = int(coords[3] - coords[1])
-                        # If larger than 40px, enforce conf >= 0.40
-                        if (bw > 40 or bh > 40) and c_val < 0.40:
-                            continue
-                        if bw <= 45 and bh <= 50:
+                        if bw <= 45 and bh <= 55 and (bw * bh) >= 64:
                             gx1 = int(coords[0] + xmin)
                             gy1 = int(coords[1] + ymin)
                             gx2 = int(coords[2] + xmin)
                             gy2 = int(coords[3] + ymin)
-                            boxes.append([gx1, gy1, bw, bh])
+                            boxes.append([gx1, gy1, gx2, gy2])
                             confs.append(c_val)
             except Exception:
                 pass
@@ -318,35 +355,42 @@ class MultiModalTriageEngine:
             gray_road = cv2.cvtColor(road_crop, cv2.COLOR_BGR2GRAY)
             med = cv2.medianBlur(gray_road, 15)
             diff = cv2.absdiff(gray_road, med)
-            _, mask = cv2.threshold(diff, 6, 255, cv2.THRESH_BINARY)
+            # Raised threshold from 6 to 28 to kill water ripples and mudflow noise
+            _, mask = cv2.threshold(diff, 28, 255, cv2.THRESH_BINARY)
             cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
             for c in cnts:
                 bx, by, bw, bh = cv2.boundingRect(c)
                 area = cv2.contourArea(c)
-                if 6 <= area <= 600 and bw <= 40 and bh <= 45:
-                    gx1 = xmin + bx
-                    gy1 = ymin + by
-                    c_val = round(0.85 + min(0.10, (area / 600.0) * 0.10), 2)
-                    boxes.append([gx1, gy1, bw, bh])
-                    confs.append(c_val)
+                box_area = bw * bh
+                if 64 <= box_area <= 1200 and bw <= 45 and bh <= 55:
+                    aspect_w_h = float(bw) / float(max(1, bh))
+                    if 0.28 <= aspect_w_h <= 1.20:
+                        gx1 = xmin + bx
+                        gy1 = ymin + by
+                        gx2 = gx1 + bw
+                        gy2 = gy1 + bh
+                        c_val = round(0.85 + min(0.10, (area / 600.0) * 0.10), 2)
+                        boxes.append([gx1, gy1, gx2, gy2])
+                        confs.append(c_val)
 
         if not boxes:
             return []
 
-        # Non-Maximum Suppression (iou=0.40)
-        indices = cv2.dnn.NMSBoxes(boxes, confs, score_threshold=0.20, nms_threshold=0.40)
-        candidate_boxes = []
-        if len(indices) > 0:
-            for idx in indices.flatten():
-                b = boxes[idx]
-                candidate_boxes.append([b[0], b[1], b[0] + b[2], b[1] + b[3]])
+        # Apply strict aerial filter suite (Aggressive NMS, Geometry, Thermal Contrast, Water Reflection)
+        filtered_boxes, _ = apply_strict_aerial_filters(
+            boxes=boxes,
+            confs=confs,
+            image_shape=rgb_img.shape,
+            thermal_img=thermal_img,
+            rgb_img=rgb_img,
+            building_footprints=building_footprints,
+            min_conf=CONFIDENCE_THRESHOLD,
+            max_iou=IOU_THRESHOLD
+        )
 
-        # Aspect Ratio & Static Filter (Eliminate Signs/Debris False Positives):
-        # 1. Discard bounding boxes that are perfect squares or purely horizontal without thermal backing (height < 1.1 * width)
-        # 2. Discard static rectangular street/road signs that lack corresponding human thermal IR signatures
         final_boxes = []
-        for cb in candidate_boxes:
+        for cb in filtered_boxes:
             cb_x1, cb_y1, cb_x2, cb_y2 = cb
             cb_w = max(1, cb_x2 - cb_x1)
             cb_h = max(1, cb_y2 - cb_y1)
@@ -467,18 +511,23 @@ class MultiModalTriageEngine:
     def process_triage(
         self,
         rgb_img: np.ndarray,
-        thermal_img: np.ndarray
+        thermal_img: np.ndarray,
+        building_footprints: Optional[List[List[int]]] = None
     ) -> Dict[str, Any]:
         """Executes the dual-stream multi-modal sensor fusion decision logic."""
         start_time = time.time()
 
         flood_pct = self.compute_rgb_flood_pct(rgb_img)
-        thermal_boxes, aircraft_detected = self.detect_thermal_hotspots(thermal_img, return_aircraft=True)
+        thermal_boxes, aircraft_detected = self.detect_thermal_hotspots(
+            thermal_img, return_aircraft=True, building_footprints=building_footprints
+        )
         human_count = len(thermal_boxes)
 
         # Corroborate with RGB ground crowd detector if thermal stream is dark or missing
         if human_count == 0:
-            rgb_boxes = self.detect_rgb_people(rgb_img, thermal_img=thermal_img)
+            rgb_boxes = self.detect_rgb_people(
+                rgb_img, thermal_img=thermal_img, building_footprints=building_footprints
+            )
             if rgb_boxes:
                 thermal_boxes = rgb_boxes
                 human_count = len(thermal_boxes)

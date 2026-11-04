@@ -25,6 +25,16 @@ import cv2
 import numpy as np
 
 from app.models.detection import DetectionObservation, BoundingBox
+from app.core.thermal_filter import (
+    CONFIDENCE_THRESHOLD,
+    IOU_THRESHOLD,
+    apply_aggressive_nms,
+    is_geometrically_plausible,
+    filter_local_thermal_contrast,
+    filter_water_specular_reflections,
+    apply_strict_aerial_filters,
+    is_inside_building_footprint,
+)
 
 def merge_nearby_boxes(boxes: List[List[int]], max_dist: int = 14) -> List[List[int]]:
     """Clusters and merges nearby fragmented human bounding boxes into cohesive individual/group boxes."""
@@ -134,13 +144,15 @@ class HumanDetectionEngine:
     def detect_thermal_hotspots(
         self,
         thermal_img: np.ndarray,
-        return_aircraft: bool = False
+        return_aircraft: bool = False,
+        building_footprints: Optional[List[List[int]]] = None
     ) -> Any:
         """
         Step 1: Primary Detection on Thermal Feed (FLIR IR).
         Isolates human body heat signatures using Local Contrast Segmentation (+3°C to +8°C over 20px background)
         and strict human aspect ratio (height >= 1.3 * width, area < 600px²).
         Strictly rejects helicopter turbines, vehicle engines, heated roofs, and static concrete slabs.
+        Applies local 10px boundary ring contrast check (kills hot rooftops) and aggressive NMS.
         """
         if thermal_img is None or thermal_img.size == 0:
             return ([], False) if return_aircraft else []
@@ -177,8 +189,9 @@ class HumanDetectionEngine:
                     aircraft_detected = True
                     continue
 
-            # Area lower bound
-            if area < 4:
+            # Area lower and upper bounds & aerial drone scale:
+            box_area = bw * bh
+            if area < 4 or box_area > (w * h * 0.05):
                 continue
 
             # Rule 3: Strict Human Aspect Ratio & Max Area constraint:
@@ -204,7 +217,26 @@ class HumanDetectionEngine:
             if yc < 0.20:
                 continue
 
-            raw_boxes.append([x, y, x + bw, y + bh])
+            # Rule 6: Local Contrast Thermal Rejection (Kill Hot Rooftops & Solar Gain)
+            # Sample 10px boundary ring surrounding the bounding box.
+            # If mean(interior) - mean(surroundings) < 3.5°C, DISCARD.
+            candidate_box = [x, y, x + bw, y + bh]
+            if not filter_local_thermal_contrast(
+                candidate_box,
+                thermal_img,
+                min_contrast_celsius=3.5,
+                ring_thickness=10,
+                building_footprints=building_footprints
+            ):
+                continue
+
+            raw_boxes.append(candidate_box)
+
+        # Apply aggressive NMS (IoU 0.35, Conf 0.65) to collapse duplicate/stacked candidate boxes
+        if raw_boxes:
+            confs = [0.94] * len(raw_boxes)
+            nms_idx = apply_aggressive_nms(raw_boxes, confs, conf_thresh=CONFIDENCE_THRESHOLD, iou_thresh=IOU_THRESHOLD)
+            raw_boxes = [raw_boxes[i] for i in nms_idx]
 
         # Cluster nearby heat signatures into sensible individual counts
         clustered_boxes = merge_nearby_boxes(raw_boxes, max_dist=12)
@@ -337,11 +369,14 @@ class HumanDetectionEngine:
     def detect_rgb_ground_crowd(
         self,
         rgb_img: np.ndarray,
-        thermal_img: Optional[np.ndarray] = None
+        thermal_img: Optional[np.ndarray] = None,
+        building_footprints: Optional[List[List[int]]] = None
     ) -> List[List[int]]:
         """
-        Fallback optical detector on settlement road (y: 0.65 to 0.95, x: 0.25 to 0.65)
-        when thermal feed is unavailable or dark.
+        Aerial optical detector on settlement road (y: 0.65 to 0.95, x: 0.25 to 0.65).
+        Enforces tight confidence threshold (>= 0.65), aggressive NMS (IoU 0.35),
+        human class filtering, aspect ratio/geometric bounds, local thermal contrast,
+        and water ripple/reflection suppression.
         """
         h, w = rgb_img.shape[:2]
         ymin, ymax = int(h * 0.62), int(h * 0.96)
@@ -353,21 +388,27 @@ class HumanDetectionEngine:
 
         if self.yolo_model is not None:
             try:
-                results = self.yolo_model(road_crop, classes=[0, 1], conf=0.20, iou=0.40, verbose=False)
+                results = self.yolo_model(
+                    road_crop,
+                    classes=[0, 1],
+                    conf=CONFIDENCE_THRESHOLD,
+                    iou=IOU_THRESHOLD,
+                    verbose=False
+                )
                 for r in results:
                     for box in r.boxes:
                         coords = box.xyxy[0].tolist()
                         c_val = float(box.conf[0])
+                        if c_val < CONFIDENCE_THRESHOLD:
+                            continue
                         bw = int(coords[2] - coords[0])
                         bh = int(coords[3] - coords[1])
-                        if (bw > 40 or bh > 40) and c_val < 0.40:
-                            continue
-                        if bw <= 45 and bh <= 50:
+                        if bw <= 45 and bh <= 55 and (bw * bh) >= 64:
                             gx1 = int(coords[0] + xmin)
                             gy1 = int(coords[1] + ymin)
                             gx2 = int(coords[2] + xmin)
                             gy2 = int(coords[3] + ymin)
-                            boxes.append([gx1, gy1, bw, bh])
+                            boxes.append([gx1, gy1, gx2, gy2])
                             confs.append(c_val)
             except Exception:
                 pass
@@ -376,31 +417,42 @@ class HumanDetectionEngine:
             gray_road = cv2.cvtColor(road_crop, cv2.COLOR_BGR2GRAY)
             med = cv2.medianBlur(gray_road, 15)
             diff = cv2.absdiff(gray_road, med)
-            _, mask = cv2.threshold(diff, 6, 255, cv2.THRESH_BINARY)
+            # Raised threshold from 6 to 28 to kill water ripples and mudflow noise
+            _, mask = cv2.threshold(diff, 28, 255, cv2.THRESH_BINARY)
             cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
             for c in cnts:
                 bx, by, bw, bh = cv2.boundingRect(c)
                 area = cv2.contourArea(c)
-                if 6 <= area <= 600 and bw <= 40 and bh <= 45:
-                    gx1 = xmin + bx
-                    gy1 = ymin + by
-                    c_val = round(0.85 + min(0.10, (area / 600.0) * 0.10), 2)
-                    boxes.append([gx1, gy1, bw, bh])
-                    confs.append(c_val)
+                box_area = bw * bh
+                if 64 <= box_area <= 1200 and bw <= 45 and bh <= 55:
+                    aspect_w_h = float(bw) / float(max(1, bh))
+                    if 0.28 <= aspect_w_h <= 1.20:
+                        gx1 = xmin + bx
+                        gy1 = ymin + by
+                        gx2 = gx1 + bw
+                        gy2 = gy1 + bh
+                        c_val = round(0.85 + min(0.10, (area / 600.0) * 0.10), 2)
+                        boxes.append([gx1, gy1, gx2, gy2])
+                        confs.append(c_val)
 
         if not boxes:
             return []
 
-        indices = cv2.dnn.NMSBoxes(boxes, confs, score_threshold=0.20, nms_threshold=0.40)
-        candidate_boxes = []
-        if len(indices) > 0:
-            for idx in indices.flatten():
-                b = boxes[idx]
-                candidate_boxes.append([b[0], b[1], b[0] + b[2], b[1] + b[3]])
+        # Apply strict aerial filter suite (Aggressive NMS, Geometry, Thermal Contrast, Water Reflection)
+        filtered_boxes, _ = apply_strict_aerial_filters(
+            boxes=boxes,
+            confs=confs,
+            image_shape=rgb_img.shape,
+            thermal_img=thermal_img,
+            rgb_img=rgb_img,
+            building_footprints=building_footprints,
+            min_conf=CONFIDENCE_THRESHOLD,
+            max_iou=IOU_THRESHOLD
+        )
 
         final_boxes = []
-        for cb in candidate_boxes:
+        for cb in filtered_boxes:
             cb_x1, cb_y1, cb_x2, cb_y2 = cb
             cb_w = max(1, cb_x2 - cb_x1)
             cb_h = max(1, cb_y2 - cb_y1)

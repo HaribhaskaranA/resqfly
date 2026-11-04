@@ -423,5 +423,111 @@ class TestResqflyCore(unittest.TestCase):
         self.assertEqual(s_delta.name, "East Ridge Community Hall")
         self.assertEqual(s_delta.elevation_meters, 9.5)
 
+    def test_19_strict_aerial_filtering_thresholds_and_nms(self):
+        """Verify baseline confidence (0.65), NMS IoU (0.35), and physical drone scale."""
+        from app.core.thermal_filter import (
+            CONFIDENCE_THRESHOLD,
+            IOU_THRESHOLD,
+            apply_aggressive_nms,
+            is_geometrically_plausible,
+            apply_strict_aerial_filters
+        )
+
+        self.assertEqual(CONFIDENCE_THRESHOLD, 0.65)
+        self.assertEqual(IOU_THRESHOLD, 0.35)
+
+        img_w, img_h = 640, 512
+
+        # 1. Pixel noise rejection (< 64 px area)
+        self.assertFalse(is_geometrically_plausible(10, 10, 14, 18, img_w, img_h)) # 4x8 = 32px
+
+        # 2. Impossibly large human (> 5% of panoramic frame: 640*512*0.05 = 16384 px)
+        self.assertFalse(is_geometrically_plausible(50, 50, 250, 250, img_w, img_h)) # 200x200 = 40000px
+
+        # 3. Ultra-wide ripple rejection (aspect w/h > 2.20)
+        self.assertFalse(is_geometrically_plausible(100, 100, 220, 115, img_w, img_h)) # w=120, h=15 -> aspect 8.0
+
+        # 4. Ultra-tall pole rejection (aspect w/h < 0.28)
+        self.assertFalse(is_geometrically_plausible(100, 100, 105, 200, img_w, img_h)) # w=5, h=100 -> aspect 0.05
+
+        # 5. Plausible aerial human target
+        self.assertTrue(is_geometrically_plausible(100, 100, 116, 134, img_w, img_h)) # w=16, h=34 -> area 544, aspect 0.47
+
+        # 6. Aggressive NMS collapsing duplicate/stacked boxes (IoU > 0.35)
+        box1 = [100, 100, 120, 140]
+        box2 = [102, 101, 122, 141] # High overlap > 85% IoU
+        box3 = [250, 250, 270, 290] # Distinct target
+        nms_idx = apply_aggressive_nms([box1, box2, box3], [0.88, 0.72, 0.91], conf_thresh=0.65, iou_thresh=0.35)
+        self.assertEqual(len(nms_idx), 2, "Aggressive NMS failed to collapse stacked duplicate boxes")
+
+        # 7. Low-confidence rejection (< 0.65)
+        f_boxes, f_confs = apply_strict_aerial_filters(
+            boxes=[box1, box3],
+            confs=[0.45, 0.89], # 0.45 must be rejected
+            image_shape=(img_h, img_w),
+            min_conf=0.65
+        )
+        self.assertEqual(len(f_boxes), 1)
+        self.assertEqual(f_boxes[0], box3)
+
+    def test_20_hot_rooftop_and_water_specular_glint_rejection(self):
+        """Verify local contrast thermal ring check and water ripple glint suppression."""
+        import cv2
+        import numpy as np
+        from app.core.thermal_filter import (
+            filter_local_thermal_contrast,
+            filter_water_specular_reflections,
+            is_inside_building_footprint,
+            apply_strict_aerial_filters
+        )
+
+        h, w = 500, 600
+        # 1. Sun-heated tin roof simulation: uniform hot mass across roof and surroundings
+        th_roof = np.zeros((h, w, 3), dtype=np.uint8)
+        th_roof[:] = [30, 20, 25] # ambient cold water/ground
+
+        # Broad sun-heated tin roof (37°C - 40°C, flat intensity ~210 across entire 120x80 area)
+        rx1, ry1, rx2, ry2 = 150, 150, 270, 230
+        th_roof[ry1:ry2, rx1:rx2] = [0, 80, 210]
+
+        # Hot roof candidate box inside the roof: interior heat matches surroundings (delta < 3.5°C)
+        roof_box = [170, 165, 230, 215]
+        self.assertFalse(
+            filter_local_thermal_contrast(roof_box, th_roof, min_contrast_celsius=3.5, ring_thickness=10),
+            "Sun-heated uniform rooftop was falsely accepted as human heat anomaly"
+        )
+
+        # 2. Isolated human Gaussian heat anomaly (+8°C above surroundings)
+        hx1, hy1, hx2, hy2 = 380, 320, 396, 356
+        # Background is cold (25 in red channel); human blob is hot (240 in red channel)
+        th_roof[hy1:hy2, hx1:hx2] = [0, 85, 240]
+        human_box = [hx1, hy1, hx2, hy2]
+        self.assertTrue(
+            filter_local_thermal_contrast(human_box, th_roof, min_contrast_celsius=3.5, ring_thickness=10),
+            "Genuine human thermal anomaly was falsely rejected"
+        )
+
+        # 3. Static building footprint rejection
+        building_footprints = [[140, 140, 280, 240]]
+        self.assertTrue(is_inside_building_footprint(roof_box, building_footprints))
+        self.assertFalse(is_inside_building_footprint(human_box, building_footprints))
+
+        # 4. Water specular glint / ripple rejection in RGB mode
+        rgb_flood = np.zeros((h, w, 3), dtype=np.uint8)
+        rgb_flood[:] = [45, 60, 75] # floodwater
+        # Ripple high-frequency luma spike
+        cv2.ellipse(rgb_flood, (250, 250), (15, 6), 0, 0, 360, (230, 235, 240), -1)
+        ripple_box = [235, 244, 265, 256]
+
+        # In cold water without human thermal signature, the ripple is suppressed
+        th_cold_water = np.zeros((h, w, 3), dtype=np.uint8)
+        th_cold_water[:] = [30, 20, 25] # Cold ambient water
+        water_mask = np.ones((h, w), dtype=np.uint8) * 255
+
+        self.assertFalse(
+            filter_water_specular_reflections(ripple_box, rgb_flood, thermal_img=th_cold_water, water_mask=water_mask),
+            "Water specular ripple glint was not suppressed"
+        )
+
 if __name__ == "__main__":
     unittest.main()
