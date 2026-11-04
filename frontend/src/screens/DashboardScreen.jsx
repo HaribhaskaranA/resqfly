@@ -29,7 +29,7 @@ import {
   Tooltip,
   CartesianGrid
 } from 'recharts';
-import FloodScene3D from '../components/FloodScene3D';
+import TerrainSatelliteMap from '../components/TerrainSatelliteMap';
 
 export default function DashboardScreen({
   disaster,
@@ -222,34 +222,32 @@ export default function DashboardScreen({
 
       {/* Main Grid: 3D Scene Viewport & Drone Battery / Operational Streams */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* 3D Village Preview Window */}
-        <div className="lg:col-span-2 panel-card p-4 flex flex-col h-[450px]">
+        {/* Tactical Satellite Terrain Map Preview Window */}
+        <div className="lg:col-span-2 panel-card p-4 flex flex-col h-[470px]">
           <div className="flex items-center justify-between mb-3 px-1">
             <div className="flex items-center gap-2">
               <span className="w-2.5 h-2.5 rounded-full bg-[#35D6F2] animate-ping" />
-              <h2 className="text-xs font-bold uppercase tracking-wider text-white font-mono">
-                Real-Time 3D Village Telemetry Viewport
+              <h2 className="text-xs font-bold uppercase tracking-wider text-white font-mono flex items-center gap-2">
+                <span>Tactical Satellite Disaster Terrain Map</span>
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-[#FF8A24]/15 text-[#FF8A24] border border-[#FF8A24]/40 font-bold uppercase">
+                  🎃 Aerial City View
+                </span>
               </h2>
             </div>
             <button
-              onClick={() => onNavigate('simulator')}
+              onClick={() => onNavigate('terrain')}
               className="text-xs text-[#FF8A24] hover:text-[#FF8A24]/80 font-mono flex items-center gap-1.5 cursor-pointer"
             >
-              <span>Full Interactive Simulator</span>
+              <span>Full Tactical Terrain Radar</span>
               <ExternalLink className="w-3.5 h-3.5" />
             </button>
           </div>
 
           <div className="flex-1 rounded-xl overflow-hidden relative border border-[#22354E]">
-            <FloodScene3D
-              buildings={simState?.buildings || []}
-              drones={drones}
-              requests={requests}
-              peopleClusters={peopleClusters}
-              missions={missions}
-              floodLevel={simState?.flood_water_level || 1.2}
-              onSelectBuilding={() => onNavigate('shelters')}
-              onSelectDrone={() => onNavigate('fleet')}
+            <TerrainSatelliteMap
+              compact={true}
+              onNavigate={onNavigate}
+              onSelectSurvivor={() => onNavigate('terrain')}
             />
           </div>
         </div>
