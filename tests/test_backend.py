@@ -584,8 +584,10 @@ class TestResqflyCore(unittest.TestCase):
         self.assertEqual(len(signatures), 2, f"Expected exactly 2 true heat signatures, found {len(signatures)}")
 
         # Verify labels and confidence
+        labels = [sig["label"] for sig in signatures]
+        self.assertIn("RESCUE BOAT / RAFT", labels)
+        self.assertIn("STRANDED VICTIM (FLOOD CORRIDOR)", labels)
         for sig in signatures:
-            self.assertEqual(sig["label"], "CONFIRMED VICTIM (FLIR IR)")
             self.assertGreaterEqual(sig["confidence"], 0.90)
 
         # Verify detection_engine and triage_engine hotspot detection
@@ -595,6 +597,41 @@ class TestResqflyCore(unittest.TestCase):
         triage_boxes, aircraft = triage_engine_instance.detect_thermal_hotspots(flir_canvas, return_aircraft=True)
         self.assertEqual(len(triage_boxes), 2, f"TriageEngine returned {len(triage_boxes)} hotspots instead of 2")
         self.assertFalse(aircraft, "Rescue raft was falsely flagged as an aircraft")
+
+    def test_23_helicopter_exhaust_and_minimum_size_clamp(self):
+        """Verify helicopter exhaust geometry exclusion, minimum 12x12 size clamp, and roof suppression."""
+        import cv2
+        import numpy as np
+        from app.core.thermal_filter import extract_true_heat_signatures
+        from app.core.triage_engine import triage_engine_instance
+
+        h, w = 500, 600
+        canvas = np.zeros((h, w, 3), dtype=np.uint8)
+
+        # 1. Helicopter rotor blooming: horizontal width > 2.5 * height (e.g., 90x20) in top quadrant
+        cv2.ellipse(canvas, (300, 80), (45, 10), 0, 0, 360, (0, 80, 255), -1)
+
+        # 2. Wire pole / speckle noise smaller than 12x12 pixels (e.g., 6x8)
+        cv2.rectangle(canvas, (100, 100), (106, 108), (0, 80, 255), -1)
+
+        # 3. Genuine human victim (14x28, aspect 2.0 >= 1.30)
+        cv2.rectangle(canvas, (200, 350), (214, 378), (0, 80, 255), -1)
+
+        # Extract signatures
+        sigs = extract_true_heat_signatures(canvas)
+
+        # Small 6x8 wire pole speckle must be discarded (< 12x12)
+        speckle_boxes = [s for s in sigs if (s["box"][2] - s["box"][0]) < 12 and (s["box"][3] - s["box"][1]) < 12]
+        self.assertEqual(len(speckle_boxes), 0, "Speckle noise smaller than 12x12 was not clamped")
+
+        # Aircraft horizontal cluster must be tagged as FRIENDLY ASSET: RESCUE HELICOPTER
+        aircraft_sigs = [s for s in sigs if s["label"] == "FRIENDLY ASSET: RESCUE HELICOPTER"]
+        self.assertEqual(len(aircraft_sigs), 1, "Helicopter exhaust was not tagged as FRIENDLY ASSET: RESCUE HELICOPTER")
+
+        # In triage detection, helicopter must be excluded from victim count and set aircraft_detected = True
+        boxes, aircraft_flag = triage_engine_instance.detect_thermal_hotspots(canvas, return_aircraft=True)
+        self.assertTrue(aircraft_flag, "Aircraft flag was not raised")
+        self.assertEqual(len(boxes), 1, f"Expected 1 stranded victim, got {len(boxes)}")
 
 if __name__ == "__main__":
     unittest.main()

@@ -222,6 +222,11 @@ class MultiModalTriageEngine:
         raw_boxes = []
 
         for sig in signatures:
+            # 1. Helicopter / Aircraft Engine Heat Exclusion
+            if sig.get("is_aircraft") or sig["label"] == "FRIENDLY ASSET: RESCUE HELICOPTER":
+                aircraft_detected = True
+                continue
+
             b = sig["box"]
             x1, y1, x2, y2 = b
             bw = max(1, x2 - x1)
@@ -230,20 +235,18 @@ class MultiModalTriageEngine:
             if crop.size == 0:
                 continue
 
-            # Building footprint exclusion:
-            if building_footprints:
-                in_building = False
-                for bx1, by1, bx2, by2 in building_footprints:
-                    if x1 >= bx1 and y1 >= by1 and x2 <= bx2 and y2 <= by2:
-                        in_building = True
-                        break
-                if in_building:
-                    continue
+            # High-Elevation Roof / Ground Suppression
+            if building_footprints and is_inside_building_footprint([x1, y1, x2, y2], building_footprints):
+                continue
+
+            # Minimum size clamp: Discard boxes smaller than 12x12
+            if bw < 12 or bh < 12:
+                continue
 
             # Check if target is yellow (rescue raft / boat / motor heat)
-            crop_hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV) if len(crop.shape) == 3 else None
-            is_yellow = False
-            if crop_hsv is not None:
+            is_yellow = (sig.get("label") == "RESCUE BOAT / RAFT")
+            if not is_yellow and len(crop.shape) == 3:
+                crop_hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
                 ym = cv2.inRange(crop_hsv, np.array([15, 140, 160]), np.array([35, 255, 255]))
                 if np.sum(ym > 0) >= 10:
                     is_yellow = True
@@ -436,20 +439,36 @@ class MultiModalTriageEngine:
         confidence: float = 0.94
     ) -> np.ndarray:
         """
-        Draws tactical high-visibility boxes around confirmed targets on the RGB feed
-        with the label: 'CONFIRMED VICTIM (FLIR IR)' with confidence score.
+        Draws tactical high-visibility boxes around confirmed targets on the RGB feed:
+        - RESCUE BOAT / RAFT (Tactical Asset, Cyan/Yellow)
+        - STRANDED VICTIM (FLOOD CORRIDOR) (Emergency Priority, Red/Orange)
         """
         annotated = rgb_img.copy()
         h_rgb, w_rgb = annotated.shape[:2]
 
         for i, box in enumerate(projected_boxes):
             rx1, ry1, rx2, ry2 = box
-            # Individual confidence variation
+            rw = max(1, rx2 - rx1)
+            rh = max(1, ry2 - ry1)
             c_val = round(min(0.98, confidence - (i % 4) * 0.02), 2)
-            label = f"CONFIRMED VICTIM (FLIR IR) {int(c_val * 100)}%"
 
-            # Tactical glowing cyan / orange border
-            cv2.rectangle(annotated, (rx1, ry1), (rx2, ry2), (0, 235, 255), 2)
+            # Classify target geometry & optical color
+            crop_rgb = rgb_img[ry1:ry2, rx1:rx2]
+            is_boat = (rw > 35 and rh > 25 and (rw * rh) >= 800)
+            if crop_rgb.size > 0 and len(crop_rgb.shape) == 3:
+                crop_hsv = cv2.cvtColor(crop_rgb, cv2.COLOR_BGR2HSV)
+                ym = cv2.inRange(crop_hsv, np.array([15, 100, 100]), np.array([35, 255, 255]))
+                if np.sum(ym > 0) >= 10:
+                    is_boat = True
+
+            if is_boat:
+                label = f"RESCUE BOAT / RAFT {int(c_val * 100)}%"
+                box_color = (0, 235, 255)  # Tactical Cyan/Yellow
+            else:
+                label = f"STRANDED VICTIM (FLOOD CORRIDOR) {int(c_val * 100)}%"
+                box_color = (0, 80, 255)   # Emergency Orange/Red
+
+            cv2.rectangle(annotated, (rx1, ry1), (rx2, ry2), box_color, 2)
 
             # High-visibility contrast background pill behind text
             (tw, th_text), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)
@@ -467,7 +486,7 @@ class MultiModalTriageEngine:
                 annotated,
                 (text_x - 2, text_y - th_text - 3),
                 (text_x + tw + 3, text_y + baseline),
-                (0, 235, 255),
+                box_color,
                 1
             )
             cv2.putText(
@@ -476,7 +495,7 @@ class MultiModalTriageEngine:
                 (text_x, text_y - 1),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.38,
-                (0, 235, 255),
+                box_color,
                 1
             )
 
@@ -552,20 +571,37 @@ class MultiModalTriageEngine:
         rgb_annotated = self.annotate_rgb_with_thermal_targets(rgb_img, projected_rgb_boxes)
         thermal_annotated = thermal_img.copy()
 
-        # If aircraft was detected, annotate exclusion banner on thermal
+        # If aircraft was detected, annotate tactical friendly asset indicator on thermal
         if aircraft_detected:
             h_th, w_th = thermal_img.shape[:2]
             cv2.putText(
-                thermal_annotated, "AIRCRAFT TURBINE & LARGE VEHICLE HEAT FILTER ACTIVE",
-                (12, int(h_th * 0.28)), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 165, 255), 1
+                thermal_annotated, "FRIENDLY ASSET: RESCUE HELICOPTER ACTIVE (NON-VICTIM)",
+                (12, int(h_th * 0.28)), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 140, 0), 1
             )
 
         # Draw on Thermal (Raw Heat Sensor Hotspots)
         for box in thermal_boxes:
-            cv2.rectangle(thermal_annotated, (box[0], box[1]), (box[2], box[3]), (0, 140, 255), 2)  # Orange
+            bw = max(1, box[2] - box[0])
+            bh = max(1, box[3] - box[1])
+            is_boat = (bw > 35 and bh > 25 and (bw * bh) >= 800)
+            th_crop = thermal_img[box[1]:box[3], box[0]:box[2]]
+            if th_crop.size > 0 and len(th_crop.shape) == 3:
+                th_hsv = cv2.cvtColor(th_crop, cv2.COLOR_BGR2HSV)
+                ym = cv2.inRange(th_hsv, np.array([15, 140, 160]), np.array([35, 255, 255]))
+                if np.sum(ym > 0) >= 10:
+                    is_boat = True
+
+            if is_boat:
+                th_label = "RESCUE BOAT / RAFT"
+                th_color = (0, 235, 255)  # Cyan/Yellow
+            else:
+                th_label = "STRANDED VICTIM (FLOOD CORRIDOR)"
+                th_color = (0, 80, 255)   # Orange/Red
+
+            cv2.rectangle(thermal_annotated, (box[0], box[1]), (box[2], box[3]), th_color, 2)
             cv2.putText(
-                thermal_annotated, "HEAT SIGNATURE (37C)", (box[0], max(16, box[1] - 4)),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 255, 255), 1
+                thermal_annotated, th_label, (box[0], max(16, box[1] - 4)),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.38, th_color, 1
             )
 
         _, rgb_buf = cv2.imencode('.jpg', rgb_annotated, [cv2.IMWRITE_JPEG_QUALITY, 85])

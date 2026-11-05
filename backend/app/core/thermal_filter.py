@@ -69,19 +69,59 @@ def extract_true_heat_signatures(flir_frame: np.ndarray) -> List[Dict[str, Any]]
     detected_boxes = []
     for cnt in contours:
         area = cv2.contourArea(cnt)
-        # Filter: Accept genuine targets between 40 and 6000 px area (includes swimmers and rescue raft)
-        if 40 <= area <= 6000:
-            orig_x, orig_y, bw, bh = cv2.boundingRect(cnt)
-            pad = 2
-            x1 = max(0, orig_x - pad)
-            y1 = max(0, orig_y - pad)
-            x2 = min(w_img, orig_x + bw + pad)
-            y2 = min(h_img, orig_y + bh + pad)
-            detected_boxes.append({
-                "box": [x1, y1, x2, y2],
-                "label": "CONFIRMED VICTIM (FLIR IR)",
-                "confidence": 0.94
-            })
+        orig_x, orig_y, orig_w, orig_h = cv2.boundingRect(cnt)
+
+        # Minimum size clamp: Discard boxes smaller than 12x12 pixels (eliminates isolated wire pole and foliage noise)
+        if orig_w < 12 or orig_h < 12 or (orig_w * orig_h) < 144:
+            continue
+
+        pad = 2
+        x1 = max(0, orig_x - pad)
+        y1 = max(0, orig_y - pad)
+        x2 = min(w_img, orig_x + orig_w + pad)
+        y2 = min(h_img, orig_y + orig_h + pad)
+        bw = x2 - x1
+        bh = y2 - y1
+        box_area = bw * bh
+
+        # 1. Helicopter / Aircraft Engine Heat Exclusion
+        # If detected hot cluster matches aircraft proportions (horizontal rotor/tail boom width > 2.5 * height
+        # or bounding area > 7000 px):
+        is_aircraft = (bw > 2.5 * bh) or (box_area > 7000) or (area > 7000)
+
+        # 2. Rescue Boat / Raft vs Stranded Victim Classification
+        crop = flir_frame[y1:y2, x1:x2]
+        is_yellow = False
+        if crop.size > 0 and len(crop.shape) == 3:
+            crop_hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+            ym = cv2.inRange(crop_hsv, np.array([15, 140, 160]), np.array([35, 255, 255]))
+            if np.sum(ym > 0) >= 10:
+                is_yellow = True
+
+        if is_aircraft:
+            label = "FRIENDLY ASSET: RESCUE HELICOPTER"
+            is_human = False
+            conf = 0.98
+        elif is_yellow:
+            label = "RESCUE BOAT / RAFT"
+            is_human = False
+            conf = 0.95
+        else:
+            label = "STRANDED VICTIM (FLOOD CORRIDOR)"
+            is_human = True
+            conf = 0.94
+
+        # Discard extreme background artifacts exceeding 20% of the entire frame
+        if box_area > (w_img * h_img * 0.20):
+            continue
+
+        detected_boxes.append({
+            "box": [x1, y1, x2, y2],
+            "label": label,
+            "confidence": conf,
+            "is_aircraft": is_aircraft,
+            "is_human": is_human
+        })
 
     return detected_boxes
 
