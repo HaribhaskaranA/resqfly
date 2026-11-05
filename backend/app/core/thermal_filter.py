@@ -84,10 +84,14 @@ def extract_true_heat_signatures(flir_frame: np.ndarray) -> List[Dict[str, Any]]
         bh = y2 - y1
         box_area = bw * bh
 
+        # Reject tall vertical wire / telephone poles
+        if bw < 16 and (float(bh) / float(max(1, bw))) > 2.2:
+            continue
+
         # 1. Helicopter / Aircraft Engine Heat Exclusion
-        # If detected hot cluster matches aircraft proportions (horizontal rotor/tail boom width > 2.5 * height
-        # or bounding area > 7000 px):
-        is_aircraft = (bw > 2.5 * bh) or (box_area > 7000) or (area > 7000)
+        # If detected hot cluster matches aircraft proportions (horizontal rotor/tail boom width > 2.2 * height
+        # or bounding area > 5000 px):
+        is_aircraft = (bw > 2.2 * bh and box_area > 1200) or (box_area > 5000) or (area > 5000)
 
         # 2. Rescue Boat / Raft vs Stranded Victim Classification
         crop = flir_frame[y1:y2, x1:x2]
@@ -98,8 +102,12 @@ def extract_true_heat_signatures(flir_frame: np.ndarray) -> List[Dict[str, Any]]
             if np.sum(ym > 0) >= 10:
                 is_yellow = True
 
+        # Reject broad flat roof slabs / sun glint if not a rescue boat or aircraft
+        if not is_yellow and not is_aircraft and (float(bw) / float(max(1, bh))) > 2.0 and box_area > 1200:
+            continue
+
         if is_aircraft:
-            label = "FRIENDLY ASSET: RESCUE HELICOPTER"
+            label = "FRIENDLY ASSET: RESCUE HELI (AIR-01)"
             is_human = False
             conf = 0.98
         elif is_yellow:

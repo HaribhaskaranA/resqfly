@@ -624,9 +624,9 @@ class TestResqflyCore(unittest.TestCase):
         speckle_boxes = [s for s in sigs if (s["box"][2] - s["box"][0]) < 12 and (s["box"][3] - s["box"][1]) < 12]
         self.assertEqual(len(speckle_boxes), 0, "Speckle noise smaller than 12x12 was not clamped")
 
-        # Aircraft horizontal cluster must be tagged as FRIENDLY ASSET: RESCUE HELICOPTER
-        aircraft_sigs = [s for s in sigs if s["label"] == "FRIENDLY ASSET: RESCUE HELICOPTER"]
-        self.assertEqual(len(aircraft_sigs), 1, "Helicopter exhaust was not tagged as FRIENDLY ASSET: RESCUE HELICOPTER")
+        # Aircraft horizontal cluster must be tagged as FRIENDLY ASSET: RESCUE HELI (AIR-01)
+        aircraft_sigs = [s for s in sigs if s["label"].startswith("FRIENDLY ASSET: RESCUE HELI")]
+        self.assertEqual(len(aircraft_sigs), 1, "Helicopter exhaust was not tagged as FRIENDLY ASSET: RESCUE HELI")
 
         # In triage detection, helicopter must be excluded from victim count and set aircraft_detected = True
         boxes, aircraft_flag = triage_engine_instance.detect_thermal_hotspots(canvas, return_aircraft=True)

@@ -332,20 +332,23 @@ class HumanDetectionEngine:
             c_val = round(min(0.98, confidence - (i % 4) * 0.02), 2)
 
             crop_rgb = rgb_img[ry1:ry2, rx1:rx2]
+            is_aircraft = (rw > 2.2 * rh and rw * rh > 1200) or (rw * rh > 5000)
             is_boat = (rw > 35 and rh > 25 and (rw * rh) >= 800)
-            if crop_rgb.size > 0 and len(crop_rgb.shape) == 3:
+            if not is_aircraft and crop_rgb.size > 0 and len(crop_rgb.shape) == 3:
                 crop_hsv = cv2.cvtColor(crop_rgb, cv2.COLOR_BGR2HSV)
                 ym = cv2.inRange(crop_hsv, np.array([15, 100, 100]), np.array([35, 255, 255]))
                 if np.sum(ym > 0) >= 10:
                     is_boat = True
 
-            if is_boat:
+            if is_aircraft:
+                label = "FRIENDLY ASSET: RESCUE HELI (AIR-01)"
+                box_color = (255, 140, 0)  # Aviation Cyan/Blue
+            elif is_boat:
                 label = f"RESCUE BOAT / RAFT {int(c_val * 100)}%"
-                box_color = (0, 235, 255)  # Cyan/Yellow
+                box_color = (0, 235, 255)  # Tactical Cyan/Yellow
             else:
                 label = f"STRANDED VICTIM (FLOOD CORRIDOR) {int(c_val * 100)}%"
-                box_color = (0, 80, 255)   # Orange/Red
-
+                box_color = (0, 80, 255)   # Emergency Orange/Red
             cv2.rectangle(annotated, (rx1, ry1), (rx2, ry2), box_color, 2)
 
             # High-visibility contrast background pill behind text

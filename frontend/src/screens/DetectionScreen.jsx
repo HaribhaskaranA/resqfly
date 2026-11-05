@@ -455,30 +455,32 @@ export default function DetectionScreen({ observations = [], onStateRefresh }) {
 
               {/* Scenario manual trigger buttons */}
               <div className="flex flex-wrap items-center gap-1.5 text-xs font-mono">
-                <span className="text-slate-500 font-bold uppercase text-[10px] mr-1 hidden sm:inline">Manual:</span>
+                <span className="text-slate-500 font-bold uppercase text-[10px] mr-1 hidden sm:inline">Presets:</span>
                 <button
                   disabled={triageLoading}
-                  onClick={() => runTriageScenario('critical')}
-                  className="px-2.5 py-1 rounded-lg bg-[#FF4D5D]/15 hover:bg-[#FF4D5D]/25 text-[#FF4D5D] border border-[#FF4D5D]/40 font-bold flex items-center gap-1 transition-all cursor-pointer disabled:opacity-50 text-[11px]"
+                  onClick={() => runTriageScenario('scene1_village')}
+                  className="px-2.5 py-1 rounded-lg bg-[#FF4D5D]/20 hover:bg-[#FF4D5D]/30 text-[#FF4D5D] border border-[#FF4D5D]/50 font-bold flex items-center gap-1 transition-all cursor-pointer disabled:opacity-50 text-[11px]"
+                  title="Scene 1: Flooded Village Dual Stream (image_a89758.jpg) - Rescue Boat + Corridor Survivors"
                 >
-                  <Flame className="w-3 h-3" />
-                  <span>Critical (3.8m Flood)</span>
+                  <Flame className="w-3 h-3 text-[#FF4D5D]" />
+                  <span>Scene 1: Village (a89758)</span>
                 </button>
                 <button
                   disabled={triageLoading}
-                  onClick={() => runTriageScenario('safe')}
-                  className="px-2.5 py-1 rounded-lg bg-[#10B981]/15 hover:bg-[#10B981]/25 text-[#10B981] border border-[#10B981]/40 font-bold flex items-center gap-1 transition-all cursor-pointer disabled:opacity-50 text-[11px]"
+                  onClick={() => runTriageScenario('scene2_valley')}
+                  className="px-2.5 py-1 rounded-lg bg-[#35D6F2]/20 hover:bg-[#35D6F2]/30 text-[#35D6F2] border border-[#35D6F2]/50 font-bold flex items-center gap-1 transition-all cursor-pointer disabled:opacity-50 text-[11px]"
+                  title="Scene 2: River Valley & Helicopter Dual Stream (image_a89723.jpg) - Friendly Heli (AIR-01) + Safe Zone Evacuees"
                 >
-                  <CheckCircle2 className="w-3 h-3" />
-                  <span>Safe Ridge (0.6m Flood)</span>
+                  <Radio className="w-3 h-3 text-[#35D6F2]" />
+                  <span>Scene 2: Heli & Valley (a89723)</span>
                 </button>
                 <button
                   disabled={triageLoading}
                   onClick={() => runTriageScenario('clear')}
-                  className="px-2.5 py-1 rounded-lg bg-[#35D6F2]/15 hover:bg-[#35D6F2]/25 text-[#35D6F2] border border-[#35D6F2]/40 font-bold flex items-center gap-1 transition-all cursor-pointer disabled:opacity-50 text-[11px]"
+                  className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-600 font-bold flex items-center gap-1 transition-all cursor-pointer disabled:opacity-50 text-[11px]"
                 >
                   <Navigation className="w-3 h-3" />
-                  <span>Clear (0m Depth)</span>
+                  <span>Clear</span>
                 </button>
               </div>
             </div>
@@ -721,8 +723,31 @@ export default function DetectionScreen({ observations = [], onStateRefresh }) {
                       {triageResult.target_coordinates?.length || 0} Targets
                     </span>
                   </div>
-                  <div className="max-h-12 overflow-y-auto pr-1 space-y-1">
-                    {triageResult.target_coordinates && triageResult.target_coordinates.length > 0 ? (
+                  <div className="max-h-20 overflow-y-auto pr-1 space-y-1">
+                    {triageResult.target_details && triageResult.target_details.length > 0 ? (
+                      triageResult.target_details.map((t, idx) => (
+                        <div
+                          key={idx}
+                          className="text-[9px] bg-[#0B1220] px-1.5 py-0.5 rounded border border-[#22354E] text-slate-300 flex items-center justify-between gap-1"
+                        >
+                          <span
+                            className={`font-bold truncate max-w-[140px] ${
+                              t.type === 'friendly_aircraft'
+                                ? 'text-[#35D6F2]'
+                                : t.type === 'tactical_asset'
+                                ? 'text-[#00E5FF]'
+                                : t.label?.includes('SAFE')
+                                ? 'text-[#10B981]'
+                                : 'text-[#FF4D5D]'
+                            }`}
+                            title={t.label}
+                          >
+                            {t.label?.replace(/ \d+%/, '')}
+                          </span>
+                          <span className="font-mono text-slate-400 shrink-0">[{t.box.join(', ')}]</span>
+                        </div>
+                      ))
+                    ) : triageResult.target_coordinates && triageResult.target_coordinates.length > 0 ? (
                       triageResult.target_coordinates.map((coords, idx) => (
                         <div
                           key={idx}
