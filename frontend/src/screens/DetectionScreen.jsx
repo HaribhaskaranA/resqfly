@@ -458,21 +458,21 @@ export default function DetectionScreen({ observations = [], onStateRefresh }) {
                 <span className="text-slate-500 font-bold uppercase text-[10px] mr-1 hidden sm:inline">Presets:</span>
                 <button
                   disabled={triageLoading}
-                  onClick={() => runTriageScenario('scene1_village')}
+                  onClick={() => runTriageScenario('scene1_bridge')}
                   className="px-2.5 py-1 rounded-lg bg-[#FF4D5D]/20 hover:bg-[#FF4D5D]/30 text-[#FF4D5D] border border-[#FF4D5D]/50 font-bold flex items-center gap-1 transition-all cursor-pointer disabled:opacity-50 text-[11px]"
-                  title="Scene 1: Flooded Village Dual Stream (image_a89758.jpg) - Rescue Boat + Corridor Survivors"
+                  title="Scene 1: Himalayan Suspension Bridge (image_9a7f02.jpg) - Clearance: 1.8m Below Deck | Status: High Surge Risk"
                 >
                   <Flame className="w-3 h-3 text-[#FF4D5D]" />
-                  <span>Scene 1: Village (a89758)</span>
+                  <span>Scene 1: Bridge (9a7f02)</span>
                 </button>
                 <button
                   disabled={triageLoading}
-                  onClick={() => runTriageScenario('scene2_valley')}
+                  onClick={() => runTriageScenario('scene2_lucknow')}
                   className="px-2.5 py-1 rounded-lg bg-[#35D6F2]/20 hover:bg-[#35D6F2]/30 text-[#35D6F2] border border-[#35D6F2]/50 font-bold flex items-center gap-1 transition-all cursor-pointer disabled:opacity-50 text-[11px]"
-                  title="Scene 2: River Valley & Helicopter Dual Stream (image_a89723.jpg) - Friendly Heli (AIR-01) + Safe Zone Evacuees"
+                  title="Scene 2: Lucknow Flooded Street (image_9a7ec7.jpg) - Depth: ~0.85m (Waist-High) | Shallow Water Squad"
                 >
-                  <Radio className="w-3 h-3 text-[#35D6F2]" />
-                  <span>Scene 2: Heli & Valley (a89723)</span>
+                  <Waves className="w-3 h-3 text-[#35D6F2]" />
+                  <span>Scene 2: Lucknow (9a7ec7)</span>
                 </button>
                 <button
                   disabled={triageLoading}
@@ -567,6 +567,13 @@ export default function DetectionScreen({ observations = [], onStateRefresh }) {
                     No RGB feed decoded
                   </div>
                 )}
+                {/* Live Water Level Metric HUD Overlay Badge */}
+                {triageResult?.water_metrics?.metric_tag && (
+                  <div className="absolute top-2 left-2 right-2 sm:right-auto bg-[#0B1220]/90 backdrop-blur-md px-3 py-1.5 rounded-lg text-[10px] sm:text-xs font-mono font-bold text-[#35D6F2] border border-[#35D6F2]/50 shadow-lg flex items-center gap-2 z-10">
+                    <span className="w-2 h-2 rounded-full bg-[#35D6F2] animate-ping shrink-0" />
+                    <span className="truncate">{triageResult.water_metrics.metric_tag}</span>
+                  </div>
+                )}
                 <div className="absolute bottom-2 left-2 bg-[#0B1220]/80 backdrop-blur px-2.5 py-1 rounded text-[10px] font-mono text-[#35D6F2] border border-[#22354E]">
                   FOV: 84° • ALT: 35.0M • RES: 640x480
                 </div>
@@ -598,6 +605,13 @@ export default function DetectionScreen({ observations = [], onStateRefresh }) {
                 ) : (
                   <div className="text-center p-6 text-slate-500 font-mono text-xs">
                     No Thermal feed decoded
+                  </div>
+                )}
+                {/* Live Water Level Metric HUD Overlay Badge */}
+                {triageResult?.water_metrics?.metric_tag && (
+                  <div className="absolute top-2 left-2 right-2 sm:right-auto bg-[#0B1220]/90 backdrop-blur-md px-3 py-1.5 rounded-lg text-[10px] sm:text-xs font-mono font-bold text-[#FF8A24] border border-[#FF8A24]/50 shadow-lg flex items-center gap-2 z-10">
+                    <span className="w-2 h-2 rounded-full bg-[#FF8A24] animate-ping shrink-0" />
+                    <span className="truncate">{triageResult.water_metrics.metric_tag}</span>
                   </div>
                 )}
                 <div className="absolute bottom-2 left-2 bg-[#0B1220]/80 backdrop-blur px-2.5 py-1 rounded text-[10px] font-mono text-[#FF8A24] border border-[#22354E]">
@@ -829,6 +843,14 @@ export default function DetectionScreen({ observations = [], onStateRefresh }) {
                         {triageResult.water_metrics?.risk_level?.replace(/_/g, ' ') || 'FLOOD WATER METRIC'}
                       </span>
                     </div>
+
+                    {/* Telemetry Metric Tag Banner */}
+                    {triageResult.water_metrics?.metric_tag && (
+                      <div className="p-2 rounded-lg bg-[#0B1220] border border-[#35D6F2]/40 text-[#35D6F2] font-black text-[10px] flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-[#35D6F2] animate-ping shrink-0" />
+                        <span>{triageResult.water_metrics.metric_tag}</span>
+                      </div>
+                    )}
 
                     <div className="grid grid-cols-2 gap-2 text-[11px]">
                       <div className="p-2 rounded-lg bg-[#0B1220] border border-[#22354E]">

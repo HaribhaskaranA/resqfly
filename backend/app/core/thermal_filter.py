@@ -89,11 +89,11 @@ def extract_true_heat_signatures(flir_frame: np.ndarray) -> List[Dict[str, Any]]
             continue
 
         # 1. Helicopter / Aircraft Engine Heat Exclusion
-        # If detected hot cluster matches aircraft proportions (horizontal rotor/tail boom width > 2.2 * height
+        # If detected hot cluster matches aircraft proportions (horizontal rotor/tail boom width > 2.5 * height
         # or bounding area > 5000 px):
-        is_aircraft = (bw > 2.2 * bh and box_area > 1200) or (box_area > 5000) or (area > 5000)
+        is_aircraft = (bw > 2.5 * bh and box_area > 1500) or (box_area > 5000) or (area > 5000)
 
-        # 2. Rescue Boat / Raft vs Stranded Victim Classification
+        # 2. Rescue Craft vs Stranded Human Victim Classification
         crop = flir_frame[y1:y2, x1:x2]
         is_yellow = False
         if crop.size > 0 and len(crop.shape) == 3:
@@ -102,19 +102,24 @@ def extract_true_heat_signatures(flir_frame: np.ndarray) -> List[Dict[str, Any]]
             if np.sum(ym > 0) >= 10:
                 is_yellow = True
 
+        # Tactical rescue raft/craft requires a horizontal nautical profile (bw >= 1.2 * bh) and large area (>= 1200 px).
+        # Human thermal targets are upright (bh >= bw) or smaller area and must NEVER be labeled as boats.
+        is_boat = is_yellow and (bw >= 1.2 * bh) and (box_area >= 1200)
+
         # Reject broad flat roof slabs / sun glint if not a rescue boat or aircraft
-        if not is_yellow and not is_aircraft and (float(bw) / float(max(1, bh))) > 2.0 and box_area > 1200:
+        if not is_boat and not is_aircraft and (float(bw) / float(max(1, bh))) > 2.0 and box_area > 1200:
             continue
 
         if is_aircraft:
             label = "FRIENDLY ASSET: RESCUE HELI (AIR-01)"
             is_human = False
             conf = 0.98
-        elif is_yellow:
+        elif is_boat:
             label = "RESCUE BOAT / RAFT"
             is_human = False
             conf = 0.95
         else:
+            # Human thermal anomalies are strictly CONFIRMED VICTIM / STRANDED VICTIM
             label = "STRANDED VICTIM (FLOOD CORRIDOR)"
             is_human = True
             conf = 0.94

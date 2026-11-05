@@ -322,35 +322,35 @@ class HumanDetectionEngine:
     ) -> np.ndarray:
         """
         Draws tactical high-visibility boxes around confirmed targets on the RGB feed:
-        - RESCUE BOAT / RAFT (Tactical Asset, Cyan/Yellow)
-        - STRANDED VICTIM (FLOOD CORRIDOR) (Emergency Priority, Red/Orange)
+        - Class 0 is human: STRICTLY labeled 'CONFIRMED VICTIM [xx%]' (Emergency Priority, Red/Orange)
+        - Friendly Aircraft: 'FRIENDLY ASSET: RESCUE HELI (AIR-01)' (Tactical Aviation Cyan/Blue)
+        - Suppresses all stray horizontal lines (y1 == y2, rh < 10).
         """
         annotated = rgb_img.copy()
         h_rgb, w_rgb = annotated.shape[:2]
 
         for i, box in enumerate(projected_boxes):
             rx1, ry1, rx2, ry2 = box
-            rw = max(1, rx2 - rx1)
-            rh = max(1, ry2 - ry1)
-            c_val = round(min(0.98, confidence - (i % 4) * 0.02), 2)
+            rw = max(0, rx2 - rx1)
+            rh = max(0, ry2 - ry1)
 
+            # Suppress flat lines, 1-pixel bars, or stray horizontal artifacts (y1 == y2, rh < 10, rw < 10)
+            if ry1 == ry2 or rx1 == rx2 or rh < 10 or rw < 10:
+                continue
+
+            c_val = round(min(0.98, confidence - (i % 4) * 0.02), 2)
             crop_rgb = rgb_img[ry1:ry2, rx1:rx2]
-            is_aircraft = (rw > 2.2 * rh and rw * rh > 1200) or (rw * rh > 5000)
-            is_boat = (rw > 35 and rh > 25 and (rw * rh) >= 800)
-            if not is_aircraft and crop_rgb.size > 0 and len(crop_rgb.shape) == 3:
-                crop_hsv = cv2.cvtColor(crop_rgb, cv2.COLOR_BGR2HSV)
-                ym = cv2.inRange(crop_hsv, np.array([15, 100, 100]), np.array([35, 255, 255]))
-                if np.sum(ym > 0) >= 10:
-                    is_boat = True
+
+            # Aircraft check
+            is_aircraft = (rw > 2.5 * rh and rw * rh > 2000) or (rw * rh > 6000)
 
             if is_aircraft:
                 label = "FRIENDLY ASSET: RESCUE HELI (AIR-01)"
                 box_color = (255, 140, 0)  # Aviation Cyan/Blue
-            elif is_boat:
-                label = f"RESCUE BOAT / RAFT {int(c_val * 100)}%"
-                box_color = (0, 235, 255)  # Tactical Cyan/Yellow
             else:
-                label = f"STRANDED VICTIM (FLOOD CORRIDOR) {int(c_val * 100)}%"
+                # Class 0 is human: STRICTLY map to CONFIRMED VICTIM [xx%]
+                # Do NOT label human or static structure as RESCUE BOAT / RAFT
+                label = f"CONFIRMED VICTIM [{int(c_val * 100)}%]"
                 box_color = (0, 80, 255)   # Emergency Orange/Red
             cv2.rectangle(annotated, (rx1, ry1), (rx2, ry2), box_color, 2)
 
@@ -740,7 +740,10 @@ class HumanDetectionEngine:
             else:
                 risk_lvl = "LOW_SURFACE_PUDDLE"
 
+            metric_tag = f"EST. WATER DEPTH: ~{max_depth:.2f}m ({dominant_level.replace('_', ' ')}) | RISK: {risk_lvl.replace('_', ' ')}"
+
             return {
+                "metric_tag": metric_tag,
                 "estimated_depth_m": round(max_depth, 2),
                 "confidence_level": "HIGH_ESTIMATE",
                 "risk_level": risk_lvl,
@@ -759,8 +762,10 @@ class HumanDetectionEngine:
             risk_fallback = "LOW_SURFACE_SPREAD"
 
         conf_fallback = "MODERATE_ESTIMATE" if flood_pct > 10.0 else "LOW_ESTIMATE"
+        metric_tag = f"EST. WATER DEPTH: ~{depth_fallback:.2f}m | RISK: {risk_fallback.replace('_', ' ')}"
 
         return {
+            "metric_tag": metric_tag,
             "estimated_depth_m": depth_fallback,
             "confidence_level": conf_fallback,
             "risk_level": risk_fallback,
@@ -779,9 +784,10 @@ class HumanDetectionEngine:
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Draws cross-verified dual-band visual annotations across both streams:
-        - Confirmed Victims: Green / Orange box with label 'CONFIRMED VICTIM (VERIFIED) [CONF: XX%]'
-        - Unverified Anomalies: Dimmed / Yellow dashed box with label 'UNVERIFIED HEAT ANOMALY'
+        - Confirmed Victims: Green / Orange box with label 'CONFIRMED VICTIM [xx%]'
+        - Unverified Anomalies: Dimmed / Yellow dashed box with label 'UNVERIFIED HEAT ANOMALY' (suppressed if noise)
         - Tactical Assets: Rescue boat (Cyan/Yellow), Helicopter (Cyan/Blue)
+        - Strictly suppresses flat horizontal lines and zero-height SVG box artifacts.
         """
         ann_rgb = frame_rgb.copy()
         ann_th = frame_thermal.copy()
@@ -791,13 +797,20 @@ class HumanDetectionEngine:
         for v in verified_victims:
             conf_pct = int(v.get("confidence", 0.90) * 100)
             status_text = " (IN WATER)" if v.get("status") == "IN_WATER_STRANDED" else ""
-            label = f"CONFIRMED VICTIM (VERIFIED) [CONF: {conf_pct}%]{status_text}"
+            custom_label = v.get("label")
+            if custom_label:
+                label = custom_label
+            else:
+                label = f"CONFIRMED VICTIM [{conf_pct}%]{status_text}"
             color = (0, 80, 255) if v.get("status") == "IN_WATER_STRANDED" else (0, 200, 100)
 
             # Draw on RGB
             b_rgb = v.get("box_rgb")
             if b_rgb:
                 rx1, ry1, rx2, ry2 = b_rgb
+                # Suppress degenerate boxes, flat lines (y1 == y2, abs(y2-y1) < 8)
+                if ry1 == ry2 or rx1 == rx2 or abs(ry2 - ry1) < 8 or abs(rx2 - rx1) < 8:
+                    continue
                 cv2.rectangle(ann_rgb, (rx1, ry1), (rx2, ry2), color, 2)
                 (tw, th_text), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)
                 text_y = max(th_text + 4, ry1 - 5)
@@ -810,6 +823,9 @@ class HumanDetectionEngine:
             b_th = v.get("box_thermal")
             if b_th:
                 tx1, ty1, tx2, ty2 = b_th
+                # Suppress degenerate boxes, flat lines
+                if ty1 == ty2 or tx1 == tx2 or abs(ty2 - ty1) < 8 or abs(tx2 - tx1) < 8:
+                    continue
                 cv2.rectangle(ann_th, (tx1, ty1), (tx2, ty2), color, 2)
                 (tw, th_text), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)
                 text_y = max(th_text + 4, ty1 - 5)
@@ -818,18 +834,22 @@ class HumanDetectionEngine:
                 cv2.rectangle(ann_th, (text_x - 2, text_y - th_text - 3), (text_x + tw + 3, text_y + baseline), color, 1)
                 cv2.putText(ann_th, label, (text_x, text_y - 1), cv2.FONT_HERSHEY_SIMPLEX, 0.38, color, 1)
 
-        # Draw unverified anomalies
+        # Draw unverified anomalies (filter out flat lines or sub-8px noise)
         for a in (unverified_anomalies or []):
             label_a = "UNVERIFIED HEAT ANOMALY"
             b_th = a.get("box_thermal")
             if b_th:
                 tx1, ty1, tx2, ty2 = b_th
+                if ty1 == ty2 or tx1 == tx2 or abs(ty2 - ty1) < 8 or abs(tx2 - tx1) < 8:
+                    continue
                 cv2.rectangle(ann_th, (tx1, ty1), (tx2, ty2), (0, 220, 255), 1)
                 cv2.putText(ann_th, label_a, (tx1, max(14, ty1 - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.32, (0, 220, 255), 1)
 
             b_proj = a.get("box_projected")
             if b_proj:
                 px1, py1, px2, py2 = b_proj
+                if py1 == py2 or px1 == px2 or abs(py2 - py1) < 8 or abs(px2 - px1) < 8:
+                    continue
                 cv2.rectangle(ann_rgb, (px1, py1), (px2, py2), (0, 220, 255), 1)
                 cv2.putText(ann_rgb, label_a, (px1, max(14, py1 - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.32, (0, 220, 255), 1)
 

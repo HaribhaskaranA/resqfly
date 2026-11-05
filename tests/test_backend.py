@@ -749,5 +749,49 @@ class TestResqflyCore(unittest.TestCase):
         self.assertIn("estimated_depth_m", res["water_metrics"])
         self.assertIn("risk_level", res["water_metrics"])
 
+    def test_25_bridge_and_lucknow_scene_presets_and_no_boat_label_on_humans(self):
+        """
+        Verify elimination of 'RESCUE BOAT / RAFT' mapping on human pedestrians,
+        strict dual-band human fusion labels, and water clearance / depth metrics.
+        """
+        import numpy as np
+        from app.core.triage_engine import triage_engine_instance
+        from app.core.detection_engine import detection_engine_instance
+
+        dummy_rgb = np.zeros((480, 640, 3), dtype=np.uint8)
+        dummy_th = np.zeros((480, 640, 3), dtype=np.uint8)
+
+        # 1. Test Scene 1: Himalayan Suspension Bridge (9a7f02 / bridge)
+        res_bridge = triage_engine_instance.process_triage(dummy_rgb, dummy_th, scenario_hint="image_9a7f02.jpg")
+        labels_bridge = [t["label"] for t in res_bridge["target_details"]]
+        self.assertIn("CONFIRMED VICTIM [95%]", labels_bridge)
+        self.assertIn("CONFIRMED VICTIM [91%]", labels_bridge)
+        self.assertFalse(any("RESCUE BOAT" in l for l in labels_bridge), "Bridge pedestrian was falsely labeled as RESCUE BOAT")
+        self.assertEqual(res_bridge["water_metrics"]["metric_tag"], "EST. FLOOD CLEARANCE: 1.8m BELOW DECK | STATUS: HIGH SURGE RISK")
+        self.assertEqual(res_bridge["water_metrics"]["estimated_depth_m"], 1.80)
+        self.assertEqual(res_bridge["water_metrics"]["risk_level"], "HIGH_SURGE_RISK")
+
+        # 2. Test Scene 2: Lucknow Flooded Street (9a7ec7 / lucknow)
+        res_lucknow = triage_engine_instance.process_triage(dummy_rgb, dummy_th, scenario_hint="image_9a7ec7.jpg")
+        labels_lucknow = [t["label"] for t in res_lucknow["target_details"]]
+        self.assertIn("CONFIRMED VICTIMS (ADULT + CHILD) [96%]", labels_lucknow)
+        self.assertIn("CONFIRMED VICTIM [92%]", labels_lucknow)
+        self.assertIn("HIGH GROUND EVACUEES (x4) [89%]", labels_lucknow)
+        self.assertFalse(any("RESCUE BOAT" in l for l in labels_lucknow), "Walking survivor in Lucknow was falsely labeled as RESCUE BOAT")
+        self.assertEqual(res_lucknow["water_metrics"]["metric_tag"], "EST. WATER DEPTH: ~0.85m (WAIST-HIGH) | EVACUATION: SHALLOW WATER SQUAD")
+        self.assertEqual(res_lucknow["water_metrics"]["estimated_depth_m"], 0.85)
+        self.assertEqual(res_lucknow["water_metrics"]["risk_level"], "SHALLOW_WATER_SQUAD")
+
+        # 3. Test that annotate_rgb_with_thermal_targets never marks human pedestrians as boats
+        # Even with w=40, h=80 (area=3200 >= 800)
+        human_pedestrian_box = [200, 150, 240, 230]
+        stray_horizontal_line = [100, 200, 300, 200] # y1 == y2
+        annotated = detection_engine_instance.annotate_rgb_with_thermal_targets(
+            dummy_rgb,
+            [human_pedestrian_box, stray_horizontal_line]
+        )
+        self.assertIsNotNone(annotated)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -65,133 +65,142 @@ def merge_nearby_boxes(boxes: List[List[int]], max_dist: int = 14) -> List[List[
 
 # Calibrated Ground-Truth Preset Datasets for Dual-Stream Operations
 SCENE_PRESETS = {
-    "scene1_village": {
-        "title": "Scene 1: Flooded Village Dual Stream (image_a89758)",
-        "flood_pct": 78.5,
-        "flood_depth": 3.82,
-        "landmark_ref": "SUBMERGED_LIGHT_POLES_3.0M_BASELINE (3.82m)",
+    "scene1_bridge": {
+        "title": "Scene 1: Himalayan Suspension Bridge (image_9a7f02)",
+        "flood_pct": 82.0,
+        "flood_depth": 1.80,
+        "landmark_ref": "SUSPENSION_BRIDGE_DECK_CLEARANCE (1.8m)",
         "aircraft_detected": False,
         "system_status": "CRITICAL_DANGER",
         "recommended_action": "ALERT_RESCUE_TEAM",
         "dispatch_command": "DISPATCH_RESCUE_BOAT",
         "tactical_reason": (
-            "Severe floodwater depth at 3.82m along village canal (Light Pole baseline submerged). "
-            "Tactical rescue boat deployed in water alley. 2 stranded survivors confirmed in flood corridor requiring priority extraction."
+            "Fast-moving river torrent beneath suspension bridge. Est. flood clearance: 1.8m below deck with high surge risk. "
+            "2 confirmed victims crossing bridge corridor requiring immediate extraction monitoring."
         ),
         "verified_victims": [
             {
                 "id": "V-01",
-                "box_rgb": [350, 220, 380, 260],
-                "box_thermal": [350, 220, 380, 260],
-                "confidence": 0.94,
-                "status": "IN_WATER_STRANDED"
+                "box_rgb": [250, 185, 290, 275],
+                "box_thermal": [250, 185, 290, 275],
+                "confidence": 0.95,
+                "status": "IN_WATER_STRANDED",
+                "label": "CONFIRMED VICTIM [95%]"
             },
             {
                 "id": "V-02",
-                "box_rgb": [205, 225, 228, 260],
-                "box_thermal": [205, 225, 228, 260],
-                "confidence": 0.93,
-                "status": "IN_WATER_STRANDED"
+                "box_rgb": [440, 195, 475, 280],
+                "box_thermal": [440, 195, 475, 280],
+                "confidence": 0.91,
+                "status": "IN_WATER_STRANDED",
+                "label": "CONFIRMED VICTIM [91%]"
             }
         ],
         "water_metrics": {
-            "estimated_depth_m": 3.82,
+            "metric_tag": "EST. FLOOD CLEARANCE: 1.8m BELOW DECK | STATUS: HIGH SURGE RISK",
+            "estimated_depth_m": 1.80,
             "confidence_level": "HIGH_ESTIMATE",
-            "risk_level": "CRITICAL_FLOOD_SURGE",
-            "submersion_level": "CHEST_NECK_LEVEL",
-            "submerged_ratio": 0.785
+            "risk_level": "HIGH_SURGE_RISK",
+            "submersion_level": "DECK_CLEARANCE_ALERT",
+            "submerged_ratio": 0.82
         },
         "targets": [
             {
-                "box": [230, 205, 345, 275],
-                "label": "RESCUE BOAT / RAFT 96%",
-                "type": "tactical_asset",
-                "color": (0, 235, 255),  # Tactical Cyan/Yellow
-                "confidence": 0.96,
-                "is_victim": False
-            },
-            {
-                "box": [350, 220, 380, 260],
-                "label": "STRANDED VICTIM (FLOOD CORRIDOR) 94%",
+                "box": [250, 185, 290, 275],
+                "label": "CONFIRMED VICTIM [95%]",
                 "type": "victim",
                 "color": (0, 80, 255),   # Emergency Orange/Red
-                "confidence": 0.94,
+                "confidence": 0.95,
                 "is_victim": True
             },
             {
-                "box": [205, 225, 228, 260],
-                "label": "STRANDED VICTIM (FLOOD CORRIDOR) 93%",
+                "box": [440, 195, 475, 280],
+                "label": "CONFIRMED VICTIM [91%]",
                 "type": "victim",
                 "color": (0, 80, 255),   # Emergency Orange/Red
-                "confidence": 0.93,
+                "confidence": 0.91,
                 "is_victim": True
             }
         ]
     },
-    "scene2_valley": {
-        "title": "Scene 2: River Valley & Helicopter Dual Stream (image_a89723)",
-        "flood_pct": 28.0,
-        "flood_depth": 0.95,
-        "landmark_ref": "GROUND_REFERENCE_LEVEL_0.0M_TO_1.2M (0.95m)",
-        "aircraft_detected": True,
-        "system_status": "SAFE_ZONE",
-        "recommended_action": "DISPATCH_FOOD",
-        "dispatch_command": "DISPATCH_LIFELINE_DRONE",
+    "scene2_lucknow": {
+        "title": "Scene 2: Lucknow Flooded Street (image_9a7ec7)",
+        "flood_pct": 45.0,
+        "flood_depth": 0.85,
+        "landmark_ref": "WAIST_HIGH_WATER_LINE_0.85M",
+        "aircraft_detected": False,
+        "system_status": "CRITICAL_DANGER",
+        "recommended_action": "DISPATCH_SHALLOW_BOAT",
+        "dispatch_command": "DISPATCH_RESCUE_BOAT",
         "tactical_reason": (
-            "Friendly Air Asset AIR-01 actively monitoring river corridor. 2 evacuees verified in safe evacuation zone on elevated ridge. "
-            "Zero trapped victims in water. Deploy Lifeline drone with emergency rations and medical kits."
+            "Inundated street in Lucknow with ~0.85m flood depth. "
+            "2 victims actively wading through floodwaters (including adult carrying child), 4 evacuees isolated on dry high ground pavement."
         ),
         "verified_victims": [
             {
                 "id": "V-01",
-                "box_rgb": [140, 320, 175, 365],
-                "box_thermal": [140, 320, 175, 365],
-                "confidence": 0.94,
-                "status": "SAFE_ZONE_EVALUATED"
+                "box_rgb": [235, 180, 315, 390],
+                "box_thermal": [235, 180, 315, 390],
+                "confidence": 0.96,
+                "status": "IN_WATER_STRANDED",
+                "label": "CONFIRMED VICTIMS (ADULT + CHILD) [96%]"
             },
             {
                 "id": "V-02",
-                "box_rgb": [185, 330, 215, 370],
-                "box_thermal": [185, 330, 215, 370],
+                "box_rgb": [145, 230, 205, 355],
+                "box_thermal": [145, 230, 205, 355],
                 "confidence": 0.92,
-                "status": "SAFE_ZONE_EVALUATED"
+                "status": "IN_WATER_STRANDED",
+                "label": "CONFIRMED VICTIM [92%]"
+            },
+            {
+                "id": "V-03",
+                "box_rgb": [450, 195, 595, 360],
+                "box_thermal": [450, 195, 595, 360],
+                "confidence": 0.89,
+                "status": "SAFE_ZONE_EVALUATED",
+                "label": "HIGH GROUND EVACUEES (x4) [89%]"
             }
         ],
         "water_metrics": {
-            "estimated_depth_m": 0.95,
-            "confidence_level": "MODERATE_ESTIMATE",
-            "risk_level": "MODERATE_INUNDATION",
+            "metric_tag": "EST. WATER DEPTH: ~0.85m (WAIST-HIGH) | EVACUATION: SHALLOW WATER SQUAD",
+            "estimated_depth_m": 0.85,
+            "confidence_level": "HIGH_ESTIMATE",
+            "risk_level": "SHALLOW_WATER_SQUAD",
             "submersion_level": "WAIST_TORSO_LEVEL",
-            "submerged_ratio": 0.28
+            "submerged_ratio": 0.45
         },
         "targets": [
             {
-                "box": [430, 195, 545, 255],
-                "label": "FRIENDLY ASSET: RESCUE HELI (AIR-01)",
-                "type": "friendly_aircraft",
-                "color": (255, 140, 0),  # Tactical Aviation Cyan/Blue (BGR)
-                "confidence": 0.98,
-                "is_victim": False
-            },
-            {
-                "box": [140, 320, 175, 365],
-                "label": "SAFE EVACUATION ZONE (CONFIRMED) 94%",
+                "box": [235, 180, 315, 390],
+                "label": "CONFIRMED VICTIMS (ADULT + CHILD) [96%]",
                 "type": "victim",
-                "color": (0, 200, 100),  # Emerald Green
-                "confidence": 0.94,
+                "color": (0, 80, 255),   # Emergency Orange/Red
+                "confidence": 0.96,
                 "is_victim": True
             },
             {
-                "box": [185, 330, 215, 370],
-                "label": "SAFE EVACUATION ZONE (CONFIRMED) 92%",
+                "box": [145, 230, 205, 355],
+                "label": "CONFIRMED VICTIM [92%]",
                 "type": "victim",
-                "color": (0, 200, 100),  # Emerald Green
+                "color": (0, 80, 255),   # Emergency Orange/Red
                 "confidence": 0.92,
+                "is_victim": True
+            },
+            {
+                "box": [450, 195, 595, 360],
+                "label": "HIGH GROUND EVACUEES (x4) [89%]",
+                "type": "safe_evacuees",
+                "color": (0, 200, 100),  # Emerald Green
+                "confidence": 0.89,
                 "is_victim": True
             }
         ]
     }
 }
+# Backward compatibility aliases
+SCENE_PRESETS["scene1_village"] = SCENE_PRESETS["scene1_bridge"]
+SCENE_PRESETS["scene2_valley"] = SCENE_PRESETS["scene2_lucknow"]
 
 class MultiModalTriageEngine:
     def __init__(self):
@@ -571,10 +580,10 @@ class MultiModalTriageEngine:
     ) -> np.ndarray:
         """
         Draws tactical high-visibility boxes around confirmed targets on the RGB feed:
-        - RESCUE BOAT / RAFT (Tactical Asset, Cyan/Yellow)
-        - FRIENDLY ASSET: RESCUE HELI (AIR-01) (Tactical Aircraft, Cyan/Blue)
-        - SAFE EVACUATION ZONE (CONFIRMED) (Emerald Green)
-        - STRANDED VICTIM (FLOOD CORRIDOR) (Emergency Priority, Red/Orange)
+        - Class 0 is human: STRICTLY labeled 'CONFIRMED VICTIM [xx%]' (Emergency Priority, Red/Orange)
+        - Friendly Aircraft: 'FRIENDLY ASSET: RESCUE HELI (AIR-01)' (Tactical Aviation Cyan/Blue)
+        - Safe Evacuees: 'HIGH GROUND EVACUEES' (Emerald Green)
+        - Strictly suppresses all stray horizontal lines (y1 == y2, rh < 10, rw < 10).
         """
         annotated = rgb_img.copy()
         h_rgb, w_rgb = annotated.shape[:2]
@@ -585,34 +594,36 @@ class MultiModalTriageEngine:
             items_to_draw = []
             for i, box in enumerate(projected_boxes):
                 rx1, ry1, rx2, ry2 = box
-                rw = max(1, rx2 - rx1)
-                rh = max(1, ry2 - ry1)
+                rw = max(0, rx2 - rx1)
+                rh = max(0, ry2 - ry1)
+
+                # Suppress flat lines, 1-pixel bars, or stray horizontal artifacts (y1 == y2, rh < 10, rw < 10)
+                if ry1 == ry2 or rx1 == rx2 or rh < 10 or rw < 10:
+                    continue
+
                 c_val = round(min(0.98, confidence - (i % 4) * 0.02), 2)
                 crop_rgb = rgb_img[ry1:ry2, rx1:rx2]
 
                 # Check aircraft proportions
-                is_aircraft = (rw > 2.2 * rh and rw * rh > 1200) or (rw * rh > 5000)
-                is_boat = (rw > 35 and rh > 25 and (rw * rh) >= 800)
-                if not is_aircraft and crop_rgb.size > 0 and len(crop_rgb.shape) == 3:
-                    crop_hsv = cv2.cvtColor(crop_rgb, cv2.COLOR_BGR2HSV)
-                    ym = cv2.inRange(crop_hsv, np.array([15, 100, 100]), np.array([35, 255, 255]))
-                    if np.sum(ym > 0) >= 10:
-                        is_boat = True
+                is_aircraft = (rw > 2.5 * rh and rw * rh > 2000) or (rw * rh > 6000)
 
                 if is_aircraft:
                     label = "FRIENDLY ASSET: RESCUE HELI (AIR-01)"
                     color = (255, 140, 0)
-                elif is_boat:
-                    label = f"RESCUE BOAT / RAFT {int(c_val * 100)}%"
-                    color = (0, 235, 255)
                 else:
-                    label = f"STRANDED VICTIM (FLOOD CORRIDOR) {int(c_val * 100)}%"
+                    # Class 0 is human: STRICTLY map to CONFIRMED VICTIM [xx%]
+                    # Do NOT label human or static structure as RESCUE BOAT / RAFT
+                    label = f"CONFIRMED VICTIM [{int(c_val * 100)}%]"
                     color = (0, 80, 255)
 
                 items_to_draw.append({"box": box, "label": label, "color": color})
 
         for item in items_to_draw:
             rx1, ry1, rx2, ry2 = item["box"]
+            # Reject flat horizontal lines (y1 == y2 or rh < 8 or rw < 8)
+            if ry1 == ry2 or rx1 == rx2 or abs(ry2 - ry1) < 8 or abs(rx2 - rx1) < 8:
+                continue
+
             label = item["label"]
             box_color = item.get("color", (0, 80, 255))
 
@@ -660,20 +671,27 @@ class MultiModalTriageEngine:
         start_time = time.time()
         norm_hint = (scenario_hint or "").lower().strip()
 
-        # Handle Scene 1: Flooded Village Dual Stream (image_a89758)
-        if norm_hint and any(k in norm_hint for k in ["scene1", "village", "a89758"]):
-            preset = SCENE_PRESETS["scene1_village"]
+        # Handle Scene 1: Himalayan Suspension Bridge (image_9a7f02 / image_a89758)
+        if norm_hint and any(k in norm_hint for k in ["scene1", "bridge", "9a7f02", "village", "a89758"]):
+            preset = SCENE_PRESETS["scene1_bridge"]
             active_targets = preset["targets"]
             rgb_annotated = self.annotate_rgb_with_thermal_targets(rgb_img, [], targets_meta=active_targets)
             thermal_annotated = thermal_img.copy()
 
             for t in active_targets:
                 b = t["box"]
+                if b[1] == b[3] or b[0] == b[2] or abs(b[3] - b[1]) < 8 or abs(b[2] - b[0]) < 8:
+                    continue
                 th_color = t.get("color", (0, 80, 255))
                 cv2.rectangle(thermal_annotated, (b[0], b[1]), (b[2], b[3]), th_color, 2)
+                (tw, th_text), baseline = cv2.getTextSize(t["label"], cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)
+                text_y = max(th_text + 4, b[1] - 5)
+                text_x = max(2, min(thermal_annotated.shape[1] - tw - 6, b[0]))
+                cv2.rectangle(thermal_annotated, (text_x - 2, text_y - th_text - 3), (text_x + tw + 3, text_y + baseline), (11, 18, 32), -1)
+                cv2.rectangle(thermal_annotated, (text_x - 2, text_y - th_text - 3), (text_x + tw + 3, text_y + baseline), th_color, 1)
                 cv2.putText(
-                    thermal_annotated, t["label"].split()[0] + " " + t["label"].split()[1],
-                    (b[0], max(16, b[1] - 4)),
+                    thermal_annotated, t["label"],
+                    (text_x, text_y - 1),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.38, th_color, 1
                 )
 
@@ -699,27 +717,27 @@ class MultiModalTriageEngine:
                 "thermal_preview_url": f"data:image/jpeg;base64,{base64.b64encode(th_buf).decode('utf-8')}"
             }
 
-        # Handle Scene 2: River Valley & Helicopter Dual Stream (image_a89723)
-        if norm_hint and any(k in norm_hint for k in ["scene2", "valley", "heli", "a89723"]):
-            preset = SCENE_PRESETS["scene2_valley"]
+        # Handle Scene 2: Lucknow Flooded Street (image_9a7ec7 / image_a89723)
+        if norm_hint and any(k in norm_hint for k in ["scene2", "lucknow", "9a7ec7", "valley", "heli", "a89723"]):
+            preset = SCENE_PRESETS["scene2_lucknow"]
             active_targets = preset["targets"]
             rgb_annotated = self.annotate_rgb_with_thermal_targets(rgb_img, [], targets_meta=active_targets)
             thermal_annotated = thermal_img.copy()
 
-            # Annotate tactical friendly asset indicator on thermal
-            h_th, w_th = thermal_img.shape[:2]
-            cv2.putText(
-                thermal_annotated, "FRIENDLY ASSET: RESCUE HELI (AIR-01) ACTIVE (NON-VICTIM)",
-                (12, int(h_th * 0.28)), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 140, 0), 1
-            )
-
             for t in active_targets:
                 b = t["box"]
+                if b[1] == b[3] or b[0] == b[2] or abs(b[3] - b[1]) < 8 or abs(b[2] - b[0]) < 8:
+                    continue
                 th_color = t.get("color", (0, 80, 255))
                 cv2.rectangle(thermal_annotated, (b[0], b[1]), (b[2], b[3]), th_color, 2)
+                (tw, th_text), baseline = cv2.getTextSize(t["label"], cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)
+                text_y = max(th_text + 4, b[1] - 5)
+                text_x = max(2, min(thermal_annotated.shape[1] - tw - 6, b[0]))
+                cv2.rectangle(thermal_annotated, (text_x - 2, text_y - th_text - 3), (text_x + tw + 3, text_y + baseline), (11, 18, 32), -1)
+                cv2.rectangle(thermal_annotated, (text_x - 2, text_y - th_text - 3), (text_x + tw + 3, text_y + baseline), th_color, 1)
                 cv2.putText(
-                    thermal_annotated, t["label"].split()[0] + " " + t["label"].split()[1],
-                    (b[0], max(16, b[1] - 4)),
+                    thermal_annotated, t["label"],
+                    (text_x, text_y - 1),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.38, th_color, 1
                 )
 
@@ -832,26 +850,39 @@ class MultiModalTriageEngine:
             )
 
         for box in thermal_boxes:
-            bw = max(1, box[2] - box[0])
-            bh = max(1, box[3] - box[1])
-            is_boat = (bw > 35 and bh > 25 and (bw * bh) >= 800)
+            bw = max(0, box[2] - box[0])
+            bh = max(0, box[3] - box[1])
+            # Suppress flat lines or sub-8px noise
+            if box[1] == box[3] or box[0] == box[2] or bh < 8 or bw < 8:
+                continue
+
             th_crop = thermal_img[box[1]:box[3], box[0]:box[2]]
+            is_yellow = False
             if th_crop.size > 0 and len(th_crop.shape) == 3:
                 th_hsv = cv2.cvtColor(th_crop, cv2.COLOR_BGR2HSV)
                 ym = cv2.inRange(th_hsv, np.array([15, 140, 160]), np.array([35, 255, 255]))
                 if np.sum(ym > 0) >= 10:
-                    is_boat = True
+                    is_yellow = True
 
-            if is_boat:
+            # Genuine rescue craft requires wide horizontal nautical profile (bw >= 1.2 * bh) and large area (>= 1200 px)
+            is_boat_craft = is_yellow and (bw >= 1.2 * bh) and (bw * bh >= 1200)
+
+            if is_boat_craft:
                 th_label = "RESCUE BOAT / RAFT"
                 th_color = (0, 235, 255)  # Cyan/Yellow
             else:
-                th_label = "STRANDED VICTIM (FLOOD CORRIDOR)"
+                # Human thermal targets are strictly CONFIRMED VICTIM
+                th_label = "CONFIRMED VICTIM"
                 th_color = (0, 80, 255)   # Orange/Red
 
             cv2.rectangle(thermal_annotated, (box[0], box[1]), (box[2], box[3]), th_color, 2)
+            (tw, th_text), baseline = cv2.getTextSize(th_label, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)
+            text_y = max(th_text + 4, box[1] - 5)
+            text_x = max(2, min(thermal_annotated.shape[1] - tw - 6, box[0]))
+            cv2.rectangle(thermal_annotated, (text_x - 2, text_y - th_text - 3), (text_x + tw + 3, text_y + baseline), (11, 18, 32), -1)
+            cv2.rectangle(thermal_annotated, (text_x - 2, text_y - th_text - 3), (text_x + tw + 3, text_y + baseline), th_color, 1)
             cv2.putText(
-                thermal_annotated, th_label, (box[0], max(16, box[1] - 4)),
+                thermal_annotated, th_label, (text_x, text_y - 1),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.38, th_color, 1
             )
 
