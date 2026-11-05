@@ -383,6 +383,12 @@ export default function DetectionScreen({ observations = [], onStateRefresh }) {
                   <li><strong className="text-white">Upload Custom Feeds:</strong> Click <code className="text-[#35D6F2] bg-[#0B1220] px-1 rounded">Upload RGB</code> or <code className="text-[#FF8A24] bg-[#0B1220] px-1 rounded">Upload FLIR</code> to upload drone footage, webcam frames, or aerial pictures.</li>
                   <li><strong className="text-white">Run Triage:</strong> Click <code className="text-white bg-[#FF8A24]/30 px-1 rounded">Run Triage</code> or select a calibrated scenario (<span className="text-[#FF4D5D]">Critical</span>, <span className="text-[#10B981]">Safe</span>, <span className="text-[#35D6F2]">Clear</span>).</li>
                   <li><strong className="text-white">Coordinator Review:</strong> In Manual Mode, AI triage alerts remain in review until the Incident Coordinator clicks <strong>Authorize & Deploy Mission</strong>.</li>
+                  <li className="list-none pt-1">
+                    <div className="p-2 rounded-lg bg-[#FF8A24]/10 border border-[#FF8A24]/40 text-[#FF8A24] text-[10.5px] leading-snug flex items-start gap-1.5">
+                      <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                      <span><strong>Thermal Image Requirement:</strong> Please confirm the thermal image is attached to get an accurate estimated value of people sheltering under cover, rooftops, or adverse conditions.</span>
+                    </div>
+                  </li>
                 </ul>
               </div>
 
@@ -486,37 +492,47 @@ export default function DetectionScreen({ observations = [], onStateRefresh }) {
             </div>
 
             {/* Custom Dual-Stream File Form */}
-            <form onSubmit={handleCustomTriageSubmit} className="flex flex-wrap items-center gap-2">
-              <label className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#111C2D] border border-[#22354E] hover:border-[#35D6F2]/50 text-[11px] font-mono text-slate-300 cursor-pointer">
-                <Camera className="w-3.5 h-3.5 text-[#35D6F2]" />
-                <span>{rgbFile ? rgbFile.name.slice(0, 10) + '...' : 'Upload RGB'}</span>
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={(e) => setRgbFile(e.target.files[0])}
-                  className="hidden"
-                />
-              </label>
+            <div className="flex flex-col gap-2">
+              <form onSubmit={handleCustomTriageSubmit} className="flex flex-wrap items-center gap-2">
+                <label className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#111C2D] border border-[#22354E] hover:border-[#35D6F2]/50 text-[11px] font-mono text-slate-300 cursor-pointer">
+                  <Camera className="w-3.5 h-3.5 text-[#35D6F2]" />
+                  <span>{rgbFile ? rgbFile.name.slice(0, 10) + '...' : 'Upload RGB'}</span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => setRgbFile(e.target.files[0])}
+                    className="hidden"
+                  />
+                </label>
 
-              <label className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#111C2D] border border-[#22354E] hover:border-[#FF8A24]/50 text-[11px] font-mono text-slate-300 cursor-pointer">
-                <Thermometer className="w-3.5 h-3.5 text-[#FF8A24]" />
-                <span>{thermalFile ? thermalFile.name.slice(0, 10) + '...' : 'Upload FLIR'}</span>
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={(e) => setThermalFile(e.target.files[0])}
-                  className="hidden"
-                />
-              </label>
+                <label className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#111C2D] border border-[#22354E] hover:border-[#FF8A24]/50 text-[11px] font-mono text-slate-300 cursor-pointer">
+                  <Thermometer className="w-3.5 h-3.5 text-[#FF8A24]" />
+                  <span>{thermalFile ? thermalFile.name.slice(0, 10) + '...' : 'Upload FLIR'}</span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => setThermalFile(e.target.files[0])}
+                    className="hidden"
+                  />
+                </label>
 
-              <button
-                type="submit"
-                disabled={triageLoading}
-                className="px-3 py-1.5 rounded-lg bg-[#FF8A24] hover:bg-[#FF8A24]/90 text-slate-950 font-black text-xs transition-all cursor-pointer disabled:opacity-50 shadow-md shadow-[#FF8A24]/20"
-              >
-                {triageLoading ? 'Processing...' : 'Run Triage'}
-              </button>
-            </form>
+                <button
+                  type="submit"
+                  disabled={triageLoading}
+                  className="px-3 py-1.5 rounded-lg bg-[#FF8A24] hover:bg-[#FF8A24]/90 text-slate-950 font-black text-xs transition-all cursor-pointer disabled:opacity-50 shadow-md shadow-[#FF8A24]/20"
+                >
+                  {triageLoading ? 'Processing...' : 'Run Triage'}
+                </button>
+              </form>
+
+              {/* Thermal image requirement reminder for manual AI model */}
+              <div className="flex items-center gap-1.5 text-[10px] font-mono text-[#FF8A24] bg-[#FF8A24]/10 px-2 py-1 rounded border border-[#FF8A24]/30">
+                <Info className="w-3 h-3 shrink-0" />
+                <span>
+                  <strong>Manual AI Mode Note:</strong> Confirm the thermal (FLIR) image is attached to get an accurate estimate of people sheltering.
+                </span>
+              </div>
+            </div>
           </div>
 
           {/* Autonomous Patrol Live Telemetry HUD */}
@@ -948,7 +964,7 @@ export default function DetectionScreen({ observations = [], onStateRefresh }) {
                   <p className="text-[10px] text-slate-400 font-mono">
                     {executionMode === 'autonomous'
                       ? 'AI automatically dispatches rescue/supply assets when conditions are met.'
-                      : 'AI generates recommendations only. Coordinator must approve each dispatch.'}
+                      : 'AI generates recommendations only. Coordinator must approve each dispatch. (Note: Confirm thermal image is attached to get estimated value of people sheltering).'}
                   </p>
                 </div>
               </div>
@@ -989,6 +1005,10 @@ export default function DetectionScreen({ observations = [], onStateRefresh }) {
                 <p className="text-xs font-bold text-[#A855F7] mb-2">
                   🧠 AI Recommendation — Awaiting Coordinator Approval
                 </p>
+                <div className="mb-2.5 p-2 rounded-lg bg-[#FF8A24]/10 border border-[#FF8A24]/30 text-[10.5px] text-[#FF8A24] font-mono flex items-center gap-1.5">
+                  <Info className="w-3.5 h-3.5 shrink-0" />
+                  <span><strong>Sheltering Assessment:</strong> Confirm thermal image is attached to evaluate estimated value of people sheltering under cover.</span>
+                </div>
                 <div className="text-xs font-mono text-slate-300 space-y-1 mb-3">
                   <p><strong>Sector:</strong> {manualPendingApproval.result.current_sector}</p>
                   <p><strong>Victims Detected:</strong> {manualPendingApproval.result.confirmed_people_count}</p>
@@ -1117,8 +1137,11 @@ export default function DetectionScreen({ observations = [], onStateRefresh }) {
                 <div className="text-center p-8 text-slate-500 space-y-2">
                   <Video className="w-12 h-12 mx-auto text-slate-600" />
                   <p className="text-xs font-mono">No video frame analyzed yet.</p>
-                  <p className="text-[11px] text-slate-600">
-                    Click "Analyze Sample Aerial Video Frame" or upload an aerial photo below.
+                  <p className="text-[11px] text-slate-500">
+                    Click "Run Single Frame Sample" or upload an aerial photo below.
+                  </p>
+                  <p className="text-[10px] text-[#FF8A24] font-mono mt-1">
+                    💡 Note: Confirm the thermal image is attached in Dual-Stream mode to get an accurate estimate of people sheltering under cover.
                   </p>
                 </div>
               )}

@@ -943,9 +943,9 @@ class HumanDetectionEngine:
         flood_depth, landmark_ref = self.compute_landmark_flood_depth(img, flood_pct)
 
         status_notes = (
-            f"Identified {detected_count} confirmed victims via Strict Class-0 Aerial Detection. Flood depth: {flood_depth}m ({landmark_ref})."
+            f"Identified {detected_count} confirmed victims via Strict Class-0 Aerial Detection. Flood depth: {flood_depth}m ({landmark_ref}). Note: Confirm the thermal image is attached to get an accurate estimate of people sheltering."
             if detected_count > 0 else
-            f"Sector clear. Zero victims detected in current frame. Flood depth: {flood_depth}m ({landmark_ref})."
+            f"Sector clear. Zero victims detected in current frame. Flood depth: {flood_depth}m ({landmark_ref}). Note: Confirm the thermal image is attached to get an accurate estimate of people sheltering."
         )
 
         return DetectionObservation(
