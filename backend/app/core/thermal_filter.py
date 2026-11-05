@@ -405,3 +405,209 @@ def apply_strict_aerial_filters(
         final_confs.append(c)
 
     return final_boxes[:max_det], final_confs[:max_det]
+
+
+def compute_box_iou(boxA: List[int], boxB: List[int]) -> float:
+    """
+    Computes Intersection over Union (IoU) between two bounding boxes:
+    box = [x1, y1, x2, y2].
+    """
+    xA = max(boxA[0], boxB[0])
+    yA = max(boxA[1], boxB[1])
+    xB = min(boxA[2], boxB[2])
+    yB = min(boxA[3], boxB[3])
+
+    inter_width = max(0, xB - xA)
+    inter_height = max(0, yB - yA)
+    inter_area = inter_width * inter_height
+
+    boxA_area = max(0, boxA[2] - boxA[0]) * max(0, boxA[3] - boxA[1])
+    boxB_area = max(0, boxB[2] - boxB[0]) * max(0, boxB[3] - boxB[1])
+
+    union_area = float(boxA_area + boxB_area - inter_area)
+    if union_area <= 0:
+        return 0.0
+
+    return inter_area / union_area
+
+
+def warp_coordinates(
+    box: List[int],
+    H: Optional[np.ndarray] = None,
+    src_shape: Optional[Tuple[int, ...]] = None,
+    dst_shape: Optional[Tuple[int, ...]] = None
+) -> List[int]:
+    """
+    Transforms bounding box coordinates from thermal sensor domain to optical RGB domain:
+    - If homography matrix H (3x3) is provided, performs spatial perspective warp on bounding box corners.
+    - Otherwise applies proportional geospatial viewport scaling from src_shape to dst_shape.
+    """
+    x1, y1, x2, y2 = box
+
+    # 1. Spatial Homography Transformation
+    if H is not None:
+        try:
+            pts = np.array([
+                [[x1, y1]],
+                [[x2, y1]],
+                [[x2, y2]],
+                [[x1, y2]]
+            ], dtype=np.float32)
+            warped = cv2.perspectiveTransform(pts, H)
+            wx1 = int(round(np.min(warped[:, 0, 0])))
+            wy1 = int(round(np.min(warped[:, 0, 1])))
+            wx2 = int(round(np.max(warped[:, 0, 0])))
+            wy2 = int(round(np.max(warped[:, 0, 1])))
+            if dst_shape:
+                h_dst, w_dst = dst_shape[:2]
+                wx1 = max(0, min(w_dst - 1, wx1))
+                wy1 = max(0, min(h_dst - 1, wy1))
+                wx2 = max(wx1 + 4, min(w_dst, wx2))
+                wy2 = max(wy1 + 4, min(h_dst, wy2))
+            return [wx1, wy1, wx2, wy2]
+        except Exception:
+            pass
+
+    # 2. Viewport / Resolution Geospatial Scaling
+    if src_shape and dst_shape:
+        h_src, w_src = src_shape[:2]
+        h_dst, w_dst = dst_shape[:2]
+        if h_src > 0 and w_src > 0:
+            scale_x = float(w_dst) / float(w_src)
+            scale_y = float(h_dst) / float(h_src)
+            rx1 = max(0, min(w_dst - 1, int(round(x1 * scale_x))))
+            ry1 = max(0, min(h_dst - 1, int(round(y1 * scale_y))))
+            rx2 = max(rx1 + 4, min(w_dst, int(round(x2 * scale_x))))
+            ry2 = max(ry1 + 4, min(h_dst, int(round(y2 * scale_y))))
+            return [rx1, ry1, rx2, ry2]
+
+    return [x1, y1, x2, y2]
+
+
+def extract_dual_band_thermal_candidates(
+    flir_frame: np.ndarray,
+    building_footprints: Optional[List[List[int]]] = None
+) -> List[Dict[str, Any]]:
+    """
+    Extracts high-confidence human candidate thermal anomalies for dual-band verification:
+    1. Segments true human core temperatures (bright yellow/orange/white highlights where R > 210, G > 130).
+    2. Rejects massive uniform thermal blocks (roofs, aircraft turbine plumes) using an area and
+       aspect-ratio clamp (0.35 <= width/height <= 2.4).
+    3. Computes local thermal contrast score for candidate weighting.
+    """
+    if flir_frame is None or flir_frame.size == 0:
+        return []
+
+    # Handle grayscale / single-channel inputs
+    if len(flir_frame.shape) == 2 or (len(flir_frame.shape) == 3 and flir_frame.shape[2] == 1):
+        flir_frame = cv2.cvtColor(flir_frame, cv2.COLOR_GRAY2BGR)
+
+    h_img, w_img = flir_frame.shape[:2]
+    frame_area = w_img * h_img
+
+    is_monochrome = (
+        len(flir_frame.shape) == 2 or
+        (len(flir_frame.shape) == 3 and np.max(np.abs(flir_frame[:, :, 0].astype(int) - flir_frame[:, :, 1].astype(int))) < 15)
+    )
+
+    if is_monochrome:
+        gray = flir_frame if len(flir_frame.shape) == 2 else flir_frame[:, :, 0]
+        bg_mean = cv2.blur(gray, (25, 25))
+        local_diff = cv2.subtract(gray, bg_mean)
+        heat_mask = cv2.inRange(local_diff, 18, 140)
+    else:
+        # RGB condition: R > 210, G > 130 (Bright Yellow / Orange / White core body heat)
+        # Note: in OpenCV default BGR, index 2 is Red, index 1 is Green
+        b_ch, g_ch, r_ch = cv2.split(flir_frame)
+        mask_rgb_core = ((r_ch > 210) & (g_ch > 130)).astype(np.uint8) * 255
+
+        # HSV Yellow/Orange & Hot Red masks
+        hsv = cv2.cvtColor(flir_frame, cv2.COLOR_BGR2HSV)
+        mask_yellow = cv2.inRange(hsv, np.array([15, 140, 160]), np.array([35, 255, 255]))
+        mask_red1 = cv2.inRange(hsv, np.array([0, 140, 150]), np.array([14, 255, 255]))
+        mask_red2 = cv2.inRange(hsv, np.array([170, 140, 150]), np.array([180, 255, 255]))
+        mask_red = cv2.bitwise_or(mask_red1, mask_red2)
+
+        # White-hot saturation mask (plumes, motors, saturated human centers)
+        mask_white = cv2.inRange(flir_frame, np.array([230, 230, 230]), np.array([255, 255, 255]))
+
+        heat_mask = cv2.bitwise_or(mask_rgb_core, cv2.bitwise_or(mask_yellow, cv2.bitwise_or(mask_red, mask_white)))
+
+    # Morphological refinement
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    clean_mask = cv2.morphologyEx(heat_mask, cv2.MORPH_OPEN, kernel)
+    clean_mask = cv2.dilate(clean_mask, kernel, iterations=1)
+
+    contours, _ = cv2.findContours(clean_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    candidates = []
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        orig_x, orig_y, orig_w, orig_h = cv2.boundingRect(cnt)
+
+        # Minimum size check: discard sub-pixel noise < 48 px
+        box_area = orig_w * orig_h
+        if box_area < 48 or orig_w < 6 or orig_h < 6:
+            continue
+
+        pad = 2
+        x1 = max(0, orig_x - pad)
+        y1 = max(0, orig_y - pad)
+        x2 = min(w_img, orig_x + orig_w + pad)
+        y2 = min(h_img, orig_y + orig_h + pad)
+        bw = max(1, x2 - x1)
+        bh = max(1, y2 - y1)
+        b_area = bw * bh
+
+        # Check aspect ratio clamp: 0.35 <= width / height <= 2.40
+        aspect_ratio = float(bw) / float(bh)
+        if aspect_ratio < 0.35 or aspect_ratio > 2.40:
+            continue
+
+        # Reject massive uniform thermal blocks (roofs, aircraft turbine plumes)
+        # Humans cannot occupy > 12% of an aerial panoramic frame
+        if b_area > (frame_area * 0.12):
+            continue
+
+        # Check for static building footprint containment
+        if building_footprints and is_inside_building_footprint([x1, y1, x2, y2], building_footprints):
+            continue
+
+        # Measure local thermal contrast delta
+        crop = flir_frame[y1:y2, x1:x2]
+        gray_crop = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if len(crop.shape) == 3 else crop
+        interior_mean = float(np.mean(gray_crop))
+        interior_std = float(np.std(gray_crop))
+
+        # Reject large flat uniform surfaces (sun-baked concrete/tin: area > 900 and std < 2.5)
+        if b_area > 900 and interior_std < 2.5:
+            continue
+
+        # Calculate local contrast against surrounding boundary ring
+        rx1, ry1 = max(0, x1 - 8), max(0, y1 - 8)
+        rx2, ry2 = min(w_img, x2 + 8), min(h_img, y2 + 8)
+        outer_crop = flir_frame[ry1:ry2, rx1:rx2]
+        outer_gray = cv2.cvtColor(outer_crop, cv2.COLOR_BGR2GRAY) if len(outer_crop.shape) == 3 else outer_crop
+        outer_mean = float(np.mean(outer_gray))
+
+        contrast_delta = max(0.0, interior_mean - outer_mean)
+        # Compute normalized thermal confidence score (0.70 to 0.98)
+        conf_thermal = round(min(0.98, max(0.70, 0.70 + (contrast_delta / 80.0) * 0.28)), 2)
+
+        candidates.append({
+            "box": [x1, y1, x2, y2],
+            "confidence": conf_thermal,
+            "contrast_delta": round(contrast_delta, 1),
+            "aspect_ratio": round(aspect_ratio, 2),
+            "area": b_area
+        })
+
+    # Apply NMS on thermal candidates
+    if candidates:
+        c_boxes = [c["box"] for c in candidates]
+        c_confs = [c["confidence"] for c in candidates]
+        nms_idx = apply_aggressive_nms(c_boxes, c_confs, conf_thresh=0.65, iou_thresh=0.30)
+        candidates = [candidates[i] for i in nms_idx]
+
+    candidates.sort(key=lambda c: (c["box"][1], c["box"][0]))
+    return candidates[:15]

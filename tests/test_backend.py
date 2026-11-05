@@ -633,5 +633,121 @@ class TestResqflyCore(unittest.TestCase):
         self.assertTrue(aircraft_flag, "Aircraft flag was not raised")
         self.assertEqual(len(boxes), 1, f"Expected 1 stranded victim, got {len(boxes)}")
 
+    def test_24_dual_band_person_verification_and_flood_depth_estimation(self):
+        """
+        Verify Dual-Band Thermal-to-RGB Cross Verification,
+        False-Positive Suppression, and Visual Flood Depth Estimation.
+        """
+        import cv2
+        import numpy as np
+        from app.core.thermal_filter import (
+            compute_box_iou,
+            warp_coordinates,
+            extract_dual_band_thermal_candidates
+        )
+        from app.core.detection_engine import detection_engine_instance
+        from app.core.triage_engine import triage_engine_instance
+
+        # 1. Test IoU computation & Homography / Viewport coordinate warp
+        box_a = [100, 100, 200, 200]
+        box_b = [100, 100, 200, 200]
+        box_c = [150, 150, 250, 250]
+        box_d = [300, 300, 400, 400]
+
+        self.assertAlmostEqual(compute_box_iou(box_a, box_b), 1.0, places=2)
+        self.assertAlmostEqual(compute_box_iou(box_a, box_d), 0.0, places=2)
+        self.assertGreater(compute_box_iou(box_a, box_c), 0.10)
+
+        # Viewport 2x scaling: (240, 320) -> (480, 640)
+        warped_viewport = warp_coordinates([50, 50, 100, 100], src_shape=(240, 320), dst_shape=(480, 640))
+        self.assertEqual(warped_viewport, [100, 100, 200, 200])
+
+        # Homography Matrix Warp: Translation matrix [ [1, 0, 30], [0, 1, 40], [0, 0, 1] ]
+        H_trans = np.array([[1.0, 0.0, 30.0], [0.0, 1.0, 40.0], [0.0, 0.0, 1.0]], dtype=np.float32)
+        warped_H = warp_coordinates([10, 10, 50, 80], H=H_trans)
+        self.assertEqual(warped_H, [40, 50, 80, 120])
+
+        # 2. Extract Thermal Candidates with core temperature & aspect ratio clamp
+        th_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        # Human candidate: bright yellow/orange highlight (R=255, G=200, B=0), 16x32, aspect = 0.5 (within 0.35 to 2.4)
+        cv2.rectangle(th_frame, (200, 300), (216, 332), (0, 200, 255), -1)
+        # Massive uniform roof block: 250x180, area > 12% frame, flat variance
+        cv2.rectangle(th_frame, (50, 50), (300, 230), (0, 180, 230), -1)
+
+        cands = extract_dual_band_thermal_candidates(th_frame)
+        self.assertTrue(any(c["box"][0] >= 195 and c["box"][2] <= 225 for c in cands), "Human candidate was not isolated")
+        # Massive roof block must be rejected
+        self.assertFalse(any((c["box"][2] - c["box"][0]) > 200 for c in cands), "Massive roof block was falsely included")
+
+        # 3. Dual-Band Person Verification
+        # Create matched RGB and Thermal frames
+        rgb_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        # Muddy flood background
+        rgb_frame[:] = [35, 55, 65]
+        # Ground / road patch on lower half
+        cv2.rectangle(rgb_frame, (150, 280), (450, 420), (120, 130, 140), -1)
+
+        # Human Target 1: Corroborated in both RGB (optical silhouette) and Thermal
+        cv2.circle(rgb_frame, (208, 305), 4, (40, 45, 50), -1)
+        cv2.ellipse(rgb_frame, (208, 318), (6, 12), 0, 0, 360, (30, 35, 40), -1)
+
+        # Anomaly 2: Thermal hot stone / sun glint without RGB human figure (e.g. at x=400, y=100 in open water)
+        cv2.ellipse(th_frame, (400, 100), (8, 12), 0, 0, 360, (0, 220, 255), -1)
+
+        verified, anomalies = detection_engine_instance.verify_dual_band_person(rgb_frame, th_frame)
+        self.assertGreaterEqual(len(verified), 1, "Corroborated human was not verified")
+        self.assertTrue(all("box_rgb" in v and "box_thermal" in v for v in verified))
+        self.assertTrue(all(v["confidence"] >= 0.70 for v in verified))
+
+        # 4. Visual Flood Water Level Metric
+        # Case A: Standing person full height (ankle/calf level: aspect >= 1.70)
+        v_shallow = [{
+            "id": "V-01",
+            "box_rgb": [200, 200, 215, 235], # 15x35 -> aspect 2.33 >= 1.70
+            "status": "IN_WATER_STRANDED",
+            "confidence": 0.94
+        }]
+        metrics_shallow = detection_engine_instance.estimate_visual_flood_depth(rgb_frame, verified_victims=v_shallow)
+        self.assertLessEqual(metrics_shallow["estimated_depth_m"], 0.50)
+        self.assertGreaterEqual(metrics_shallow["estimated_depth_m"], 0.30)
+        self.assertEqual(metrics_shallow["submersion_level"], "ANKLE_CALF_LEVEL")
+
+        # Case B: Waist/Torso level (lower extremities submerged: aspect between 1.0 and 1.70)
+        v_waist = [{
+            "id": "V-02",
+            "box_rgb": [200, 200, 218, 224], # 18x24 -> aspect 1.33
+            "status": "IN_WATER_STRANDED",
+            "confidence": 0.92
+        }]
+        metrics_waist = detection_engine_instance.estimate_visual_flood_depth(rgb_frame, verified_victims=v_waist)
+        self.assertGreaterEqual(metrics_waist["estimated_depth_m"], 0.90)
+        self.assertLessEqual(metrics_waist["estimated_depth_m"], 1.30)
+        self.assertEqual(metrics_waist["submersion_level"], "WAIST_TORSO_LEVEL")
+
+        # Case C: Chest/Neck level (head/shoulders only: aspect < 1.0)
+        v_chest = [{
+            "id": "V-03",
+            "box_rgb": [200, 200, 225, 215], # 25x15 -> aspect 0.60
+            "status": "IN_WATER_STRANDED",
+            "confidence": 0.91
+        }]
+        metrics_chest = detection_engine_instance.estimate_visual_flood_depth(rgb_frame, verified_victims=v_chest)
+        self.assertGreaterEqual(metrics_chest["estimated_depth_m"], 1.50)
+        self.assertLessEqual(metrics_chest["estimated_depth_m"], 2.00)
+        self.assertEqual(metrics_chest["risk_level"], "CRITICAL_FLOOD_SURGE")
+
+        # Case D: Fallback Color Contrast Segmentation (when no human in water)
+        metrics_fallback = detection_engine_instance.estimate_visual_flood_depth(rgb_frame, verified_victims=[], flood_pct=60.0)
+        self.assertGreaterEqual(metrics_fallback["estimated_depth_m"], 1.0)
+        self.assertEqual(metrics_fallback["heuristic_basis"], "COLOR_CONTRAST_SUBMERGED_RATIO")
+
+        # 5. End-to-End API payload verification
+        res = triage_engine_instance.process_triage(rgb_frame, th_frame, scenario_hint="scene1_village")
+        self.assertIn("verified_victims", res)
+        self.assertIn("water_metrics", res)
+        self.assertGreater(len(res["verified_victims"]), 0)
+        self.assertIn("estimated_depth_m", res["water_metrics"])
+        self.assertIn("risk_level", res["water_metrics"])
+
 if __name__ == "__main__":
     unittest.main()

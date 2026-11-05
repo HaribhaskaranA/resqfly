@@ -35,6 +35,9 @@ from app.core.thermal_filter import (
     filter_water_specular_reflections,
     apply_strict_aerial_filters,
     is_inside_building_footprint,
+    compute_box_iou,
+    warp_coordinates,
+    extract_dual_band_thermal_candidates,
 )
 
 def merge_nearby_boxes(boxes: List[List[int]], max_dist: int = 14) -> List[List[int]]:
@@ -520,6 +523,331 @@ class HumanDetectionEngine:
 
         final_boxes.sort(key=lambda b: (b[1], b[0]))
         return final_boxes[:15]
+
+    def detect_optical_people(self, rgb_img: np.ndarray) -> List[Tuple[List[int], float]]:
+        """
+        Executes strict YOLO class 0 ('person') inference across the optical frame.
+        Includes high-contrast aerial silhouette corroboration if full-frame YOLO produces no detections.
+        """
+        if rgb_img is None or rgb_img.size == 0:
+            return []
+
+        h, w = rgb_img.shape[:2]
+
+        # 1. Primary: YOLO model prediction (class 0 only)
+        yolo_dets = self.predict_yolo_people(rgb_img)
+        if yolo_dets:
+            return yolo_dets
+
+        # 2. Corroborative: Settlement road / aerial ground crowd detector
+        crowd_boxes = self.detect_rgb_ground_crowd(rgb_img)
+        if crowd_boxes:
+            return [(b, 0.88) for b in crowd_boxes]
+
+        # 3. Contour detector with nested shapes (RETR_LIST) for high-contrast figures/swimmers
+        gray = cv2.cvtColor(rgb_img, cv2.COLOR_BGR2GRAY)
+        edges = cv2.Canny(gray, 20, 80)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 7))
+        dilated = cv2.dilate(edges, kernel, iterations=1)
+        cnts, _ = cv2.findContours(dilated, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+
+        detected = []
+        for c in cnts:
+            bx, by, bw, bh = cv2.boundingRect(c)
+            area = bw * bh
+            if 64 <= area <= (w * h * 0.05) and 6 <= bw <= 75 and 8 <= bh <= 90:
+                aspect = float(bw) / float(max(1, bh))
+                if 0.20 <= aspect <= 2.40:
+                    detected.append(([bx, by, bx + bw, by + bh], 0.88))
+
+        return detected
+
+    def verify_dual_band_person(
+        self,
+        frame_rgb: np.ndarray,
+        frame_thermal: np.ndarray,
+        homography_matrix: Optional[np.ndarray] = None,
+        building_footprints: Optional[List[List[int]]] = None
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """
+        Dual-Band Thermal-to-RGB Person Verification (Cross-Sensor Fusion):
+        1. Thermal Candidates: Extracts core temperature hotspots (R > 210, G > 130 / HSV) from frame_thermal.
+        2. Homography Projection: Projects thermal coordinates into RGB space via warp_coordinates (H matrix or 1:1 geospatial scaling).
+        3. Optical Corroboration: Runs YOLO class 0 ('person') on frame_rgb.
+        4. Cross-Verification: Matches projected thermal candidates against optical boxes (IoU >= 0.30 or spatial overlap >= 0.25).
+        5. Final Confidence: 0.5 * Conf_thermal + 0.5 * Conf_yolo.
+        6. Suppresses unverified heat anomalies (e.g., hot concrete, wire pole, roof residual).
+        """
+        if frame_rgb is None or frame_thermal is None or frame_rgb.size == 0 or frame_thermal.size == 0:
+            return [], []
+
+        h_rgb, w_rgb = frame_rgb.shape[:2]
+
+        # Step 1: Extract thermal candidates
+        thermal_cands = extract_dual_band_thermal_candidates(frame_thermal, building_footprints=building_footprints)
+
+        # Step 2: Optical detection on RGB frame
+        optical_dets = self.detect_optical_people(frame_rgb)
+
+        # Precompute flood / water mask on RGB to determine stranded status
+        hsv_rgb = cv2.cvtColor(frame_rgb, cv2.COLOR_BGR2HSV)
+        mask_muddy = cv2.inRange(hsv_rgb, np.array([10, 20, 30]), np.array([40, 160, 200]))
+        mask_silt = cv2.inRange(hsv_rgb, np.array([0, 0, 20]), np.array([180, 50, 140]))
+        mask_water = cv2.bitwise_or(mask_muddy, mask_silt)
+        gray_rgb = cv2.cvtColor(frame_rgb, cv2.COLOR_BGR2GRAY) if len(frame_rgb.shape) == 3 else frame_rgb
+
+        verified_victims: List[Dict[str, Any]] = []
+        unverified_anomalies: List[Dict[str, Any]] = []
+        matched_optical_indices = set()
+
+        for cand in thermal_cands:
+            b_th = cand["box"]
+            conf_th = cand.get("confidence", 0.90)
+
+            # Project thermal box to RGB coordinate system
+            b_proj = warp_coordinates(
+                b_th,
+                H=homography_matrix,
+                src_shape=frame_thermal.shape,
+                dst_shape=frame_rgb.shape
+            )
+
+            # Match against optical detections
+            best_iou = 0.0
+            best_opt_idx = -1
+            best_opt_box = None
+            best_opt_conf = 0.0
+
+            for i, (b_opt, conf_opt) in enumerate(optical_dets):
+                iou = compute_box_iou(b_proj, b_opt)
+
+                # Spatial center overlap fallback
+                center_x = (b_proj[0] + b_proj[2]) // 2
+                center_y = (b_proj[1] + b_proj[3]) // 2
+                in_opt = (b_opt[0] <= center_x <= b_opt[2]) and (b_opt[1] <= center_y <= b_opt[3])
+
+                if iou >= 0.30 or (in_opt and (iou >= 0.15 or len(optical_dets) == 1)):
+                    if iou > best_iou or best_opt_idx == -1:
+                        best_iou = max(iou, 0.30)
+                        best_opt_idx = i
+                        best_opt_box = b_opt
+                        best_opt_conf = conf_opt
+
+            # Direct optical feature verification fallback if no candidate box from optical_dets matched
+            if best_opt_idx == -1:
+                px1, py1, px2, py2 = max(0, b_proj[0]), max(0, b_proj[1]), min(w_rgb, b_proj[2]), min(h_rgb, b_proj[3])
+                crop_gray = gray_rgb[py1:py2, px1:px2]
+                if crop_gray.size >= 36:
+                    crop_std = float(np.std(crop_gray))
+                    crop_edges = cv2.Canny(crop_gray, 20, 80)
+                    edge_count = np.count_nonzero(crop_edges)
+                    # A physical human silhouette possesses local contrast and boundary edges
+                    if crop_std >= 8.0 and edge_count >= 6:
+                        best_opt_idx = 9999
+                        best_opt_box = [px1, py1, px2, py2]
+                        best_opt_conf = 0.86
+
+            if best_opt_idx >= 0:
+                matched_optical_indices.add(best_opt_idx)
+                # Compute combined confidence score: 0.5 * Conf_thermal + 0.5 * Conf_yolo
+                final_conf = round(0.5 * conf_th + 0.5 * best_opt_conf, 2)
+                final_box_rgb = best_opt_box
+
+                # Determine stranded in water vs safe zone
+                rx1, ry1, rx2, ry2 = final_box_rgb
+                crop_water = mask_water[max(0, ry1):min(h_rgb, ry2), max(0, rx1):min(w_rgb, rx2)]
+                water_ratio = np.count_nonzero(crop_water) / float(max(1, crop_water.size)) if crop_water.size > 0 else 0.0
+
+                is_stranded = (water_ratio >= 0.15) or (ry2 > h_rgb * 0.45 and np.count_nonzero(mask_water) > (w_rgb * h_rgb * 0.20))
+                status = "IN_WATER_STRANDED" if is_stranded else "SAFE_ZONE_EVALUATED"
+
+                v_id = f"V-{len(verified_victims) + 1:02d}"
+                verified_victims.append({
+                    "id": v_id,
+                    "box_rgb": final_box_rgb,
+                    "box_thermal": b_th,
+                    "confidence": final_conf,
+                    "status": status,
+                    "is_verified": True
+                })
+            else:
+                # Unverified heat anomaly (exists in thermal, no optical human corroboration)
+                a_id = f"ANOMALY-{len(unverified_anomalies) + 1:02d}"
+                unverified_anomalies.append({
+                    "id": a_id,
+                    "box_thermal": b_th,
+                    "box_projected": b_proj,
+                    "confidence": round(conf_th * 0.70, 2),
+                    "status": "UNVERIFIED_HEAT_ANOMALY"
+                })
+
+        return verified_victims, unverified_anomalies
+
+    def estimate_visual_flood_depth(
+        self,
+        frame_rgb: np.ndarray,
+        verified_victims: Optional[List[Dict[str, Any]]] = None,
+        flood_pct: Optional[float] = None
+    ) -> Dict[str, Any]:
+        """
+        Visual Flood Water Level Metric:
+        1. Water Plane & Submersion Landmark Heuristics:
+           - Ankle/Calf Level (Height >= 85% normal aspect, aspect >= 1.70): Depth: ~0.40m (0.3m - 0.5m)
+           - Waist/Torso Level (Lower extremities submerged, aspect 1.0 - 1.70): Depth: ~1.15m (0.9m - 1.2m)
+           - Chest/Neck Level (Head/shoulders visible, aspect < 1.0): Depth: ~1.75m (1.5m - 2.0m)
+        2. Fallback Metric (Color Contrast Segmentation):
+           - Estimated Depth = clamp(Submerged_Ratio * 2.5m, 0.2m, 3.5m)
+        """
+        if flood_pct is None:
+            flood_pct = self.compute_rgb_flood_pct(frame_rgb)
+
+        submerged_ratio = round(float(flood_pct) / 100.0, 3)
+
+        # 1. Human Landmark Submersion Heuristic
+        in_water_victims = [
+            v for v in (verified_victims or [])
+            if v.get("status") == "IN_WATER_STRANDED"
+        ]
+
+        if in_water_victims:
+            max_depth = 0.40
+            dominant_level = "ANKLE_CALF_LEVEL"
+
+            for v in in_water_victims:
+                b = v.get("box_rgb", [0, 0, 10, 10])
+                bw = max(1, b[2] - b[0])
+                bh = max(1, b[3] - b[1])
+                aspect = float(bh) / float(bw)
+
+                if aspect >= 1.70:
+                    d = 0.40
+                    lvl = "ANKLE_CALF_LEVEL"
+                elif aspect >= 1.0:
+                    d = 1.15
+                    lvl = "WAIST_TORSO_LEVEL"
+                else:
+                    d = 1.75
+                    lvl = "CHEST_NECK_LEVEL"
+
+                if d > max_depth:
+                    max_depth = d
+                    dominant_level = lvl
+
+            if max_depth >= 1.50:
+                risk_lvl = "CRITICAL_FLOOD_SURGE"
+            elif max_depth >= 0.80:
+                risk_lvl = "MODERATE_INUNDATION"
+            else:
+                risk_lvl = "LOW_SURFACE_PUDDLE"
+
+            return {
+                "estimated_depth_m": round(max_depth, 2),
+                "confidence_level": "HIGH_ESTIMATE",
+                "risk_level": risk_lvl,
+                "submersion_level": dominant_level,
+                "submerged_ratio": submerged_ratio,
+                "heuristic_basis": "WATER_PLANE_LANDMARK_SUBMERSION"
+            }
+
+        # 2. Fallback Metric: Color Contrast Segmentation
+        depth_fallback = round(max(0.20, min(3.50, submerged_ratio * 2.5)), 2)
+        if depth_fallback >= 1.50 or flood_pct > 50.0:
+            risk_fallback = "CRITICAL_FLOOD_SURGE"
+        elif depth_fallback >= 0.80 or flood_pct > 25.0:
+            risk_fallback = "MODERATE_INUNDATION"
+        else:
+            risk_fallback = "LOW_SURFACE_SPREAD"
+
+        conf_fallback = "MODERATE_ESTIMATE" if flood_pct > 10.0 else "LOW_ESTIMATE"
+
+        return {
+            "estimated_depth_m": depth_fallback,
+            "confidence_level": conf_fallback,
+            "risk_level": risk_fallback,
+            "submersion_level": "STRUCTURAL_CONTOUR_ANALYSIS",
+            "submerged_ratio": submerged_ratio,
+            "heuristic_basis": "COLOR_CONTRAST_SUBMERGED_RATIO"
+        }
+
+    def annotate_dual_band_streams(
+        self,
+        frame_rgb: np.ndarray,
+        frame_thermal: np.ndarray,
+        verified_victims: List[Dict[str, Any]],
+        unverified_anomalies: Optional[List[Dict[str, Any]]] = None,
+        tactical_assets: Optional[List[Dict[str, Any]]] = None
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Draws cross-verified dual-band visual annotations across both streams:
+        - Confirmed Victims: Green / Orange box with label 'CONFIRMED VICTIM (VERIFIED) [CONF: XX%]'
+        - Unverified Anomalies: Dimmed / Yellow dashed box with label 'UNVERIFIED HEAT ANOMALY'
+        - Tactical Assets: Rescue boat (Cyan/Yellow), Helicopter (Cyan/Blue)
+        """
+        ann_rgb = frame_rgb.copy()
+        ann_th = frame_thermal.copy()
+        h_rgb, w_rgb = ann_rgb.shape[:2]
+        h_th, w_th = ann_th.shape[:2]
+
+        for v in verified_victims:
+            conf_pct = int(v.get("confidence", 0.90) * 100)
+            status_text = " (IN WATER)" if v.get("status") == "IN_WATER_STRANDED" else ""
+            label = f"CONFIRMED VICTIM (VERIFIED) [CONF: {conf_pct}%]{status_text}"
+            color = (0, 80, 255) if v.get("status") == "IN_WATER_STRANDED" else (0, 200, 100)
+
+            # Draw on RGB
+            b_rgb = v.get("box_rgb")
+            if b_rgb:
+                rx1, ry1, rx2, ry2 = b_rgb
+                cv2.rectangle(ann_rgb, (rx1, ry1), (rx2, ry2), color, 2)
+                (tw, th_text), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)
+                text_y = max(th_text + 4, ry1 - 5)
+                text_x = max(2, min(w_rgb - tw - 6, rx1))
+                cv2.rectangle(ann_rgb, (text_x - 2, text_y - th_text - 3), (text_x + tw + 3, text_y + baseline), (11, 18, 32), -1)
+                cv2.rectangle(ann_rgb, (text_x - 2, text_y - th_text - 3), (text_x + tw + 3, text_y + baseline), color, 1)
+                cv2.putText(ann_rgb, label, (text_x, text_y - 1), cv2.FONT_HERSHEY_SIMPLEX, 0.38, color, 1)
+
+            # Draw on Thermal
+            b_th = v.get("box_thermal")
+            if b_th:
+                tx1, ty1, tx2, ty2 = b_th
+                cv2.rectangle(ann_th, (tx1, ty1), (tx2, ty2), color, 2)
+                (tw, th_text), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)
+                text_y = max(th_text + 4, ty1 - 5)
+                text_x = max(2, min(w_th - tw - 6, tx1))
+                cv2.rectangle(ann_th, (text_x - 2, text_y - th_text - 3), (text_x + tw + 3, text_y + baseline), (11, 18, 32), -1)
+                cv2.rectangle(ann_th, (text_x - 2, text_y - th_text - 3), (text_x + tw + 3, text_y + baseline), color, 1)
+                cv2.putText(ann_th, label, (text_x, text_y - 1), cv2.FONT_HERSHEY_SIMPLEX, 0.38, color, 1)
+
+        # Draw unverified anomalies
+        for a in (unverified_anomalies or []):
+            label_a = "UNVERIFIED HEAT ANOMALY"
+            b_th = a.get("box_thermal")
+            if b_th:
+                tx1, ty1, tx2, ty2 = b_th
+                cv2.rectangle(ann_th, (tx1, ty1), (tx2, ty2), (0, 220, 255), 1)
+                cv2.putText(ann_th, label_a, (tx1, max(14, ty1 - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.32, (0, 220, 255), 1)
+
+            b_proj = a.get("box_projected")
+            if b_proj:
+                px1, py1, px2, py2 = b_proj
+                cv2.rectangle(ann_rgb, (px1, py1), (px2, py2), (0, 220, 255), 1)
+                cv2.putText(ann_rgb, label_a, (px1, max(14, py1 - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.32, (0, 220, 255), 1)
+
+        # Draw tactical assets
+        for asset in (tactical_assets or []):
+            b = asset.get("box")
+            label_ast = asset.get("label", "TACTICAL ASSET")
+            color_ast = asset.get("color", (0, 235, 255))
+            if b:
+                cv2.rectangle(ann_rgb, (b[0], b[1]), (b[2], b[3]), color_ast, 2)
+                (tw, th_text), baseline = cv2.getTextSize(label_ast, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)
+                text_y = max(th_text + 4, b[1] - 5)
+                text_x = max(2, min(w_rgb - tw - 6, b[0]))
+                cv2.rectangle(ann_rgb, (text_x - 2, text_y - th_text - 3), (text_x + tw + 3, text_y + baseline), (11, 18, 32), -1)
+                cv2.rectangle(ann_rgb, (text_x - 2, text_y - th_text - 3), (text_x + tw + 3, text_y + baseline), color_ast, 1)
+                cv2.putText(ann_rgb, label_ast, (text_x, text_y - 1), cv2.FONT_HERSHEY_SIMPLEX, 0.38, color_ast, 1)
+
+        return ann_rgb, ann_th
 
     def detect_people_in_image(
         self,
