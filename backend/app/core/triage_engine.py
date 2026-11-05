@@ -20,6 +20,7 @@ import numpy as np
 from app.core.thermal_filter import (
     CONFIDENCE_THRESHOLD,
     IOU_THRESHOLD,
+    extract_true_heat_signatures,
     apply_aggressive_nms,
     is_geometrically_plausible,
     filter_local_thermal_contrast,
@@ -152,42 +153,42 @@ class MultiModalTriageEngine:
 
     def segment_thermal_local_contrast(self, thermal_img: np.ndarray) -> np.ndarray:
         """
-        Local Contrast Segmentation:
-        Detects pixels that are +3°C to +8°C warmer than the immediate surrounding 20px background.
-        This catches partially submerged, cold/hypothermic victims while rejecting uniform heated areas.
+        Local Contrast & Thermal HSV Color Segmentation:
+        Isolates bright yellow & high-heat orange and hot red signatures (peak body/motor heat)
+        while strictly rejecting green roofs and blue water.
+        For monochrome feeds, applies background differential contrast (+3°C to +8°C).
         """
         if thermal_img is None or thermal_img.size == 0:
             return np.zeros((1, 1), dtype=np.uint8)
 
         is_monochrome = (
             len(thermal_img.shape) == 2 or
-            (len(thermal_img.shape) == 3 and np.max(np.abs(thermal_img[:, :, 0].astype(int) - thermal_img[:, :, 1].astype(int))) == 0)
+            (len(thermal_img.shape) == 3 and np.max(np.abs(thermal_img[:, :, 0].astype(int) - thermal_img[:, :, 1].astype(int))) < 15)
         )
 
         if is_monochrome:
-            gray = thermal_img[:, :, 0] if len(thermal_img.shape) == 3 else thermal_img
+            gray = thermal_img if len(thermal_img.shape) == 2 else cv2.cvtColor(thermal_img, cv2.COLOR_BGR2GRAY)
+            bg_mean = cv2.blur(gray, (21, 21))
+            local_diff = cv2.subtract(gray, bg_mean)
+            clean_mask = cv2.inRange(local_diff, 15, 120)
         else:
-            gray = cv2.cvtColor(thermal_img, cv2.COLOR_BGR2GRAY)
+            hsv = cv2.cvtColor(thermal_img, cv2.COLOR_BGR2HSV)
+            lower_yellow = np.array([15, 140, 160])
+            upper_yellow = np.array([35, 255, 255])
+            mask_yellow = cv2.inRange(hsv, lower_yellow, upper_yellow)
 
-        # Immediate surrounding 20px background estimation using 21x21 box filter
-        bg_mean = cv2.blur(gray, (21, 21))
-        local_diff = cv2.subtract(gray, bg_mean)
+            lower_red1 = np.array([0, 140, 150])
+            upper_red1 = np.array([14, 255, 255])
+            lower_red2 = np.array([170, 140, 150])
+            upper_red2 = np.array([180, 255, 255])
+            mask_red = cv2.inRange(hsv, lower_red1, upper_red1) | cv2.inRange(hsv, lower_red2, upper_red2)
 
-        # +3°C to +8°C warmer than 20px background corresponds to delta [10, 60] in 8-bit FLIR calibration
-        contrast_mask = cv2.inRange(local_diff, 10, 120)
+            heat_mask = cv2.bitwise_or(mask_yellow, mask_red)
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+            clean_mask = cv2.morphologyEx(heat_mask, cv2.MORPH_OPEN, kernel)
+            clean_mask = cv2.dilate(clean_mask, kernel, iterations=1)
 
-        # For color FLIR Lepton palettes (Ironbow):
-        if len(thermal_img.shape) == 3 and not is_monochrome:
-            red = thermal_img[:, :, 2]
-            red_bg = cv2.blur(red, (21, 21))
-            red_diff = cv2.subtract(red, red_bg)
-            red_contrast = cv2.inRange(red_diff, 12, 140)
-
-            heat_color = cv2.inRange(thermal_img, np.array([0, 0, 150]), np.array([90, 130, 255]))
-            warm_candidates = cv2.bitwise_and(red_contrast, heat_color)
-            contrast_mask = cv2.bitwise_or(contrast_mask, warm_candidates)
-
-        return contrast_mask
+        return clean_mask
 
     def detect_thermal_hotspots(
         self,
@@ -196,14 +197,10 @@ class MultiModalTriageEngine:
         building_footprints: Optional[List[List[int]]] = None
     ) -> Any:
         """
-        Hard Aircraft / Large Vehicle Rejection & Strict Human Aspect Ratio Filtering:
-        1. Local Contrast Segmentation (+3°C to +8°C warmer than surrounding 20px background).
-        2. Strict Human Aspect Ratio: (height >= 1.3 * width) and maximum area < 600px²
-           to eliminate heated roofs, concrete slabs, and machinery.
-        3. Turbine Core Saturation: Drops pure white saturated turbine exhaust (pixel intensity > 245).
-        4. Flight Path Filter: Suppresses heat signatures centered between 30% and 60% vertical frame over open river.
-        5. Building Wall Filter: Strips false positives on the right-hand wall (x > 0.68, y < 0.65).
-        6. Local 10px boundary ring contrast check (kills hot rooftops) and aggressive NMS.
+        Step 1: Primary Detection on Thermal Feed (FLIR IR).
+        Pinpoints true heat signatures (Peak body and motor heat) using HSV Yellow/Orange/Red color isolation.
+        Strictly rejects green rooftops, blue water ripples, and broad solar gain.
+        Accurately detects rescue boats, motor heat, and floating swimmers in water corridors.
         """
         if thermal_img is None or thermal_img.size == 0:
             self.last_aircraft_detected = False
@@ -212,85 +209,60 @@ class MultiModalTriageEngine:
         h, w = thermal_img.shape[:2]
         aircraft_detected = False
 
-        heat_mask = self.segment_thermal_local_contrast(thermal_img)
-        cnts, _ = cv2.findContours(heat_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # Aircraft / turbine exhaust detection: check for white-hot saturation in upper sky/horizon
+        upper = thermal_img[:int(h * 0.40), :]
+        if len(thermal_img.shape) == 3:
+            white_pixels = np.sum((upper[:, :, 0] >= 245) & (upper[:, :, 1] >= 245) & (upper[:, :, 2] >= 245))
+        else:
+            white_pixels = np.sum(upper >= 245)
+        if white_pixels >= 10:
+            aircraft_detected = True
+
+        signatures = extract_true_heat_signatures(thermal_img)
         raw_boxes = []
 
-        for cnt in cnts:
-            x, y, bw, bh = cv2.boundingRect(cnt)
-            area = cv2.contourArea(cnt)
-            crop = thermal_img[y:y+bh, x:x+bw]
-
-            # Rule 1: Maximum Pixel Area Filter:
-            # Single human cannot exceed 35x35 pixels. Contiguous hotspot with width > 45px OR height > 50px OR area > 800px²
-            # is a vehicle, turbine, or burning structure -> IMMEDIATELY DISCARD IT.
-            if bw > 45 or bh > 50 or area > 800:
-                if y < h * 0.65:
-                    aircraft_detected = True
+        for sig in signatures:
+            b = sig["box"]
+            x1, y1, x2, y2 = b
+            bw = max(1, x2 - x1)
+            bh = max(1, y2 - y1)
+            crop = thermal_img[y1:y2, x1:x2]
+            if crop.size == 0:
                 continue
 
-            # Rule 2: Turbine Core Saturation:
-            # Pure white saturated pixels (pixel intensity > 245 or RGB >= 245) -> turbine exhaust.
-            if len(crop.shape) == 3:
-                has_white_sat = np.sum((crop[:, :, 0] >= 245) & (crop[:, :, 1] >= 245) & (crop[:, :, 2] >= 245)) >= 2
-                if has_white_sat:
-                    aircraft_detected = True
-                    continue
-            elif len(crop.shape) == 2:
-                if np.sum(crop >= 245) >= 2:
-                    aircraft_detected = True
+            # Building footprint exclusion:
+            if building_footprints:
+                in_building = False
+                for bx1, by1, bx2, by2 in building_footprints:
+                    if x1 >= bx1 and y1 >= by1 and x2 <= bx2 and y2 <= by2:
+                        in_building = True
+                        break
+                if in_building:
                     continue
 
-            # Area lower and upper bounds & aerial scale:
-            box_area = bw * bh
-            if area < 4 or box_area > (w * h * 0.05):
-                continue
+            # Check if target is yellow (rescue raft / boat / motor heat)
+            crop_hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV) if len(crop.shape) == 3 else None
+            is_yellow = False
+            if crop_hsv is not None:
+                ym = cv2.inRange(crop_hsv, np.array([15, 140, 160]), np.array([35, 255, 255]))
+                if np.sum(ym > 0) >= 10:
+                    is_yellow = True
 
-            # Rule 3: Strict Human Aspect Ratio & Max Area constraint:
-            # Only accept clusters with vertical ratio (height >= 1.3 * width) and maximum area < 600px²
-            # to eliminate heated roofs, concrete slabs, and machinery.
-            if area >= 600:
-                continue
-            aspect = float(bh) / float(max(1, bw))
-            if aspect < 1.30:
-                continue
+            # If not yellow rescue boat, apply human upright aspect ratio to reject broad roofs & square slabs
+            if not is_yellow:
+                aspect = float(bh) / float(bw)
+                if aspect < 1.30:
+                    continue
 
-            # Rule 4: Flight Path / Mid-Frame Velocity Filter:
-            # Heat signature centered between 30% and 60% vertical frame over open river/water without ground contact.
-            yc = (y + bh / 2.0) / float(h)
-            xc = (x + bw / 2.0) / float(w)
-            if 0.30 <= yc <= 0.60 and xc >= 0.50:
-                aircraft_detected = True
-                continue
+            raw_boxes.append([x1, y1, x2, y2])
 
-            # Rule 5: Strip building false positives on the right-hand wall & top sky horizon
-            if xc > 0.68 and yc < 0.65:
-                continue
-            if yc < 0.20:
-                continue
-
-            # Rule 6: Local Contrast Thermal Rejection (Kill Hot Rooftops & Solar Gain)
-            # Sample 10px boundary ring surrounding the bounding box.
-            # If mean(interior) - mean(surroundings) < 3.5°C, DISCARD.
-            candidate_box = [x, y, x + bw, y + bh]
-            if not filter_local_thermal_contrast(
-                candidate_box,
-                thermal_img,
-                min_contrast_celsius=3.5,
-                ring_thickness=10,
-                building_footprints=building_footprints
-            ):
-                continue
-
-            raw_boxes.append(candidate_box)
-
-        # Apply aggressive NMS (IoU 0.35, Conf 0.65) to collapse duplicate/stacked candidate boxes
+        # Apply aggressive NMS (IoU 0.25, Conf 0.70)
         if raw_boxes:
             confs = [0.94] * len(raw_boxes)
             nms_idx = apply_aggressive_nms(raw_boxes, confs, conf_thresh=CONFIDENCE_THRESHOLD, iou_thresh=IOU_THRESHOLD)
             raw_boxes = [raw_boxes[i] for i in nms_idx]
 
-        # Cluster nearby heat signatures on the ground/road into sensible individual counts and cap to max 15
+        # Cluster nearby heat signatures into sensible individual counts and cap to max 15
         clustered_boxes = merge_nearby_boxes(raw_boxes, max_dist=12)
         clustered_boxes.sort(key=lambda b: (b[1], b[0]))
         clustered_boxes = clustered_boxes[:15]

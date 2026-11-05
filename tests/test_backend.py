@@ -549,5 +549,52 @@ class TestResqflyCore(unittest.TestCase):
         self.assertEqual(len(obs.bounding_boxes), 0)
         self.assertIn("Sector clear", obs.notes)
 
+    def test_22_true_heat_signatures_yellow_red_mask(self):
+        """Verify FLIR true heat signature extraction isolates Yellow/Red hotspots and rejects Green roofs & Blue water."""
+        import cv2
+        import numpy as np
+        from app.core.thermal_filter import extract_true_heat_signatures
+        from app.core.detection_engine import detection_engine_instance
+        from app.core.triage_engine import triage_engine_instance
+
+        # 1. Canvas with Green Roof and Blue Water
+        h, w = 400, 500
+        flir_canvas = np.zeros((h, w, 3), dtype=np.uint8)
+
+        # Floodwater background (Deep Blue: BGR [180, 50, 20])
+        flir_canvas[:] = [180, 50, 20]
+
+        # Broad sun-heated Green rooftop (BGR [20, 180, 30])
+        cv2.rectangle(flir_canvas, (30, 30), (180, 180), (20, 180, 30), -1)
+
+        # Confirm 0 detections on baseline Green roof + Blue water
+        base_signatures = extract_true_heat_signatures(flir_canvas)
+        self.assertEqual(len(base_signatures), 0, f"False positive detected on green roof/blue water: {base_signatures}")
+
+        # 2. Add Bright Yellow Rescue Raft / Motorboat (BGR [0, 255, 255])
+        # Centered in water corridor (x: 240 to 290, y: 150 to 190) -> area ~2000px
+        cv2.rectangle(flir_canvas, (240, 150), (290, 190), (0, 255, 255), -1)
+
+        # 3. Add Hot Red Swimmer in bottom water corridor (BGR [0, 0, 255])
+        # Target (x: 350 to 366, y: 310 to 338) -> human aspect ratio
+        cv2.rectangle(flir_canvas, (350, 310), (366, 338), (0, 0, 255), -1)
+
+        # Extract heat signatures
+        signatures = extract_true_heat_signatures(flir_canvas)
+        self.assertEqual(len(signatures), 2, f"Expected exactly 2 true heat signatures, found {len(signatures)}")
+
+        # Verify labels and confidence
+        for sig in signatures:
+            self.assertEqual(sig["label"], "CONFIRMED VICTIM (FLIR IR)")
+            self.assertGreaterEqual(sig["confidence"], 0.90)
+
+        # Verify detection_engine and triage_engine hotspot detection
+        det_boxes = detection_engine_instance.detect_thermal_hotspots(flir_canvas)
+        self.assertEqual(len(det_boxes), 2, f"DetectionEngine returned {len(det_boxes)} hotspots instead of 2")
+
+        triage_boxes, aircraft = triage_engine_instance.detect_thermal_hotspots(flir_canvas, return_aircraft=True)
+        self.assertEqual(len(triage_boxes), 2, f"TriageEngine returned {len(triage_boxes)} hotspots instead of 2")
+        self.assertFalse(aircraft, "Rescue raft was falsely flagged as an aircraft")
+
 if __name__ == "__main__":
     unittest.main()
